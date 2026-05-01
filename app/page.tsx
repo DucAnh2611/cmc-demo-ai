@@ -34,6 +34,13 @@ interface DocSummary {
   title: string;
   department?: string;
   sourceUrl?: string;
+  /** 'self' = uploaded by the signed-in user; 'other' = uploaded by someone
+   * else in a group I share; 'seed' = built-in sample doc. Drives the
+   * provenance badge so users can see WHY a doc appears in their list. */
+  provenance: 'self' | 'other' | 'seed';
+  /** Group IDs the doc is shared with. Resolved to display names client-side
+   * via /api/my-groups for the "Visible to" chips. */
+  allowedGroups: string[];
 }
 
 // Per-session conversation memory. Lives in sessionStorage (cleared when
@@ -292,7 +299,7 @@ export default function ChatPage() {
             onClick={() => setShowMyDocs(true)}
             className="rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100"
           >
-            My documents
+            Documents
           </button>
           <Link
             href="/flow"
@@ -608,6 +615,28 @@ function SourceModal({
   );
 }
 
+type DocsView = 'all' | 'mine';
+
+/** Pill tag showing where a doc came from. Reading just the title isn't
+ *  enough — a user might wonder "why am I seeing this?" The badge answers
+ *  in one glance: I uploaded it, someone else in my group did, or it's a
+ *  built-in seed doc. */
+function ProvenanceBadge({ p }: { p: DocSummary['provenance'] }) {
+  const meta: Record<DocSummary['provenance'], { label: string; cls: string }> = {
+    self: { label: 'You', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+    other: { label: 'Shared', cls: 'bg-blue-50 text-blue-700 border-blue-200' },
+    seed: { label: 'Seed', cls: 'bg-slate-100 text-slate-600 border-slate-200' }
+  };
+  const { label, cls } = meta[p];
+  return (
+    <span
+      className={`inline-flex shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${cls}`}
+    >
+      {label}
+    </span>
+  );
+}
+
 function MyDocsModal({
   onClose,
   acquireToken,
@@ -617,17 +646,52 @@ function MyDocsModal({
   acquireToken: () => Promise<string>;
   onSelectDoc: (id: string) => void;
 }) {
+  const [view, setView] = useState<DocsView>('all');
   const [docs, setDocs] = useState<DocSummary[] | null>(null);
   const [groupCount, setGroupCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // group ID → display name lookup. Populated once on open from /api/my-groups.
+  // Used to render the "Visible to: HR · Public" line under each row. Group
+  // IDs not in the map (e.g. an upload shared with a group the caller isn't
+  // a member of, but the doc still passed ACL via another shared group)
+  // render as a truncated id — never a leak, since the doc was already
+  // permitted to this user.
+  const [groupNames, setGroupNames] = useState<Map<string, string>>(new Map());
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const token = await acquireToken();
-        const res = await fetch('/api/my-docs', {
+        const res = await fetch('/api/my-groups', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (cancelled || !res.ok) return;
+        const data = (await res.json()) as { groups: Array<{ id: string; displayName: string }> };
+        const map = new Map<string, string>();
+        for (const g of data.groups) map.set(g.id, g.displayName);
+        setGroupNames(map);
+      } catch {
+        // Non-fatal — chips just render IDs instead of names.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [acquireToken]);
+
+  // Re-fetch whenever the view changes. The 'mine' view ANDs uploader_oid
+  // onto the existing ACL filter server-side — see app/api/my-docs/route.ts.
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    (async () => {
+      try {
+        const token = await acquireToken();
+        const url = view === 'mine' ? '/api/my-docs?mine=true' : '/api/my-docs';
+        const res = await fetch(url, {
           headers: { Authorization: `Bearer ${token}` }
         });
         if (cancelled) return;
@@ -647,7 +711,7 @@ function MyDocsModal({
     return () => {
       cancelled = true;
     };
-  }, [acquireToken]);
+  }, [acquireToken, view]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -676,23 +740,59 @@ function MyDocsModal({
         className="flex max-h-[95dvh] w-full max-w-2xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="shrink-0 flex items-start justify-between gap-4 border-b bg-white px-6 pt-5 pb-3">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-900">Documents you can read</h2>
-            <p className="mt-1 text-xs text-slate-500">
-              Filtered by your Entra group membership
-              {groupCount !== null && <> ({groupCount} group{groupCount === 1 ? '' : 's'})</>}.
-              Each row is a doc you have permission to view; click to open it.
-            </p>
+        <div className="shrink-0 border-b bg-white px-6 pt-5 pb-3">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">
+                {view === 'mine' ? 'Documents you uploaded' : 'Documents you can read'}
+              </h2>
+              <p className="mt-1 text-xs text-slate-500">
+                {view === 'mine' ? (
+                  <>Filtered to your uploads. Others in your groups can also see these — that&rsquo;s the point of sharing to a group.</>
+                ) : (
+                  <>
+                    Everything your Entra group membership grants access to
+                    {groupCount !== null && <> ({groupCount} group{groupCount === 1 ? '' : 's'})</>}.
+                    Includes your own uploads and uploads from other members of those groups.
+                  </>
+                )}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md px-2 py-1 text-sm text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+              aria-label="Close"
+            >
+              ✕
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md px-2 py-1 text-sm text-slate-500 hover:bg-slate-100 hover:text-slate-900"
-            aria-label="Close"
-          >
-            ✕
-          </button>
+          {/* View tabs — clarify "I can read" vs "I uploaded" so users
+              don't conflate "appears in this list" with "I own this". */}
+          <div className="mt-3 flex gap-1 rounded-md bg-slate-100 p-1 text-xs">
+            <button
+              type="button"
+              onClick={() => setView('all')}
+              className={`flex-1 rounded px-3 py-1.5 font-medium transition ${
+                view === 'all'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              All I can read
+            </button>
+            <button
+              type="button"
+              onClick={() => setView('mine')}
+              className={`flex-1 rounded px-3 py-1.5 font-medium transition ${
+                view === 'mine'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              My uploads only
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto px-6 py-4">
@@ -729,8 +829,28 @@ function MyDocsModal({
                           onClick={() => onSelectDoc(d.id)}
                           className="block w-full px-4 py-3 text-left text-sm hover:bg-slate-50"
                         >
-                          <div className="font-medium text-slate-900">{d.title}</div>
-                          <div className="mt-0.5 text-xs text-slate-500">id: {d.id}</div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-slate-900">{d.title}</span>
+                            <ProvenanceBadge p={d.provenance} />
+                          </div>
+                          {d.allowedGroups.length > 0 && (
+                            <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-slate-500">
+                              <span className="text-slate-400">Visible to:</span>
+                              {d.allowedGroups.map((gid) => {
+                                const name = groupNames.get(gid);
+                                return (
+                                  <span
+                                    key={gid}
+                                    className="rounded bg-slate-100 px-1.5 py-0.5 font-medium text-slate-700"
+                                    title={gid}
+                                  >
+                                    {name || `${gid.slice(0, 8)}…`}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+                          <div className="mt-1 text-[10px] text-slate-400">id: {d.id}</div>
                         </button>
                       </li>
                     ))}
@@ -765,7 +885,8 @@ function UploadModal({
   acquireToken: () => Promise<string>;
   onSelectDoc: (id: string) => void;
 }) {
-  const [groups, setGroups] = useState<Array<{ id: string; displayName: string }> | null>(null);
+  type GroupChoice = { id: string; displayName: string; memberCount?: number | null };
+  const [groups, setGroups] = useState<GroupChoice[] | null>(null);
   const [canUpload, setCanUpload] = useState<boolean>(true);
   const [uploaderGroupId, setUploaderGroupId] = useState<string | null>(null);
   const [selectedGroups, setSelectedGroups] = useState<Set<string>>(new Set());
@@ -775,21 +896,33 @@ function UploadModal({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState<UploadResult[] | null>(null);
+  // Two-step submit. confirmStep=false → user picks files + groups.
+  // confirmStep=true → review screen with member counts; user must
+  // explicitly click "Confirm & Upload" to actually publish. Designed to
+  // halve accidental over-sharing during a demo (the cheap, reversible
+  // moment is BEFORE the upload — once chunks land in the index, the doc
+  // is immediately searchable to the chosen audience).
+  const [confirmStep, setConfirmStep] = useState(false);
 
-  // Load the user's groups so we can render checkboxes for ones they belong
-  // to. The server re-validates on submit; this is purely UX.
+  // Load the user's groups WITH member counts so the confirmation step can
+  // show "HR (12 members)". The server enriches via Microsoft Graph; if a
+  // count call fails the field comes back null and the UI shows the group
+  // name without a count. Plain group fetch (no withMemberCount) would also
+  // work — counts are an enhancement, not a requirement.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const token = await acquireToken();
-        const res = await fetch('/api/my-groups', { headers: { Authorization: `Bearer ${token}` } });
+        const res = await fetch('/api/my-groups?withMemberCount=true', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
         if (cancelled) return;
         if (!res.ok) {
           setGroupsError(`Could not load groups: ${res.status} ${await res.text()}`);
         } else {
           const data = (await res.json()) as {
-            groups: Array<{ id: string; displayName: string }>;
+            groups: GroupChoice[];
             canUpload?: boolean;
             uploaderGroupId?: string | null;
           };
@@ -846,7 +979,9 @@ function UploadModal({
     setFiles(arr);
   };
 
-  const handleUpload = async () => {
+  /** Validates the form and switches to the confirmation panel. The actual
+   *  upload doesn't fire until the user clicks "Confirm & Upload" below. */
+  const handleReview = () => {
     if (busy) return;
     if (files.length === 0) {
       setError('Pick at least one file.');
@@ -856,6 +991,13 @@ function UploadModal({
       setError('Pick at least one group to share with.');
       return;
     }
+    setError(null);
+    setConfirmStep(true);
+  };
+
+  /** Sends the upload after the user confirms in step 2. */
+  const handleUpload = async () => {
+    if (busy) return;
     setError(null);
     setBusy(true);
     try {
@@ -870,16 +1012,22 @@ function UploadModal({
       });
       if (!res.ok) {
         setError(`Upload failed: ${res.status} ${await res.text()}`);
+        setConfirmStep(false); // bounce back so the user can fix and retry
         return;
       }
       const data = (await res.json()) as { results: UploadResult[] };
       setResults(data.results);
     } catch (e) {
       setError((e as Error).message);
+      setConfirmStep(false);
     } finally {
       setBusy(false);
     }
   };
+
+  // Selected groups expanded with display names + counts, for the summary
+  // panel. Computed only when needed (step 2 is rendered).
+  const selectedGroupRows = (groups || []).filter((g) => selectedGroups.has(g.id));
 
   return (
     <div
@@ -1001,24 +1149,105 @@ function UploadModal({
               </div>
             )}
 
-            <div className="flex items-center justify-end gap-2 border-t pt-3">
-              <button
-                type="button"
-                onClick={onClose}
-                disabled={busy}
-                className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleUpload}
-                disabled={busy || files.length === 0 || selectedGroups.size === 0}
-                className="rounded-md bg-slate-900 px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
-              >
-                {busy ? 'Uploading…' : `Upload ${files.length || ''} file${files.length === 1 ? '' : 's'}`.trim()}
-              </button>
-            </div>
+            {/* Step 1 actions: Cancel + Review (no upload yet). */}
+            {!confirmStep && (
+              <div className="flex items-center justify-end gap-2 border-t pt-3">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  disabled={busy}
+                  className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleReview}
+                  disabled={files.length === 0 || selectedGroups.size === 0}
+                  className="rounded-md bg-slate-900 px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                >
+                  Review &amp; share →
+                </button>
+              </div>
+            )}
+
+            {/* Step 2: confirmation panel. Surfaces the audience size BEFORE
+                the upload commits — the cheap, reversible moment. Once the
+                chunks are indexed, every group member can immediately query
+                them via RAG. */}
+            {confirmStep && (
+              <div className="border-t pt-3">
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                  <div className="font-semibold">About to share — please confirm</div>
+                  <p className="mt-1 text-xs">
+                    The chunks will be indexed immediately and become readable to every member of
+                    the groups below. There is no &ldquo;unshare&rdquo; — you would need to delete
+                    the document by reaching out to an administrator.
+                  </p>
+
+                  <div className="mt-3 space-y-3">
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-800">
+                        Files ({files.length})
+                      </div>
+                      <ul className="mt-1 list-disc pl-5 text-xs text-amber-900">
+                        {files.map((f) => (
+                          <li key={f.name + f.size} className="truncate">
+                            {f.name}{' '}
+                            <span className="text-amber-700">({Math.round(f.size / 1024)} KB)</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-800">
+                        Visible to ({selectedGroupRows.length} group
+                        {selectedGroupRows.length === 1 ? '' : 's'})
+                      </div>
+                      <ul className="mt-1 space-y-0.5 text-xs text-amber-900">
+                        {selectedGroupRows.map((g) => (
+                          <li key={g.id} className="flex items-center gap-2">
+                            <span className="font-medium">{g.displayName}</span>
+                            <span className="text-amber-700">
+                              ·{' '}
+                              {typeof g.memberCount === 'number'
+                                ? `${g.memberCount} member${g.memberCount === 1 ? '' : 's'}`
+                                : 'members (count unavailable)'}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+
+                {error && (
+                  <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                    {error}
+                  </div>
+                )}
+
+                <div className="mt-3 flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setConfirmStep(false)}
+                    disabled={busy}
+                    className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                  >
+                    ← Back to edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleUpload}
+                    disabled={busy}
+                    className="rounded-md bg-amber-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
+                  >
+                    {busy ? 'Uploading…' : 'Confirm & upload'}
+                  </button>
+                </div>
+              </div>
+            )}
           </>
         )}
 

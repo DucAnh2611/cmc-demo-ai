@@ -15,6 +15,14 @@ interface GraphMemberOfResponse {
  * upload modal so the user can pick which group(s) to share their upload
  * with — only the ones they belong to are surfaced. The upload endpoint
  * re-validates server-side, so this is purely a UX convenience.
+ *
+ * Query params:
+ *   ?withMemberCount=true — enrich each group with `memberCount` (live from
+ *     Graph). Used by the upload confirmation step so the user sees, e.g.,
+ *     "HR (12 members)" before publishing. Each enrichment is one Graph
+ *     round-trip per group; failures (insufficient permission, etc.) yield
+ *     `memberCount: null` for that group rather than failing the whole
+ *     request.
  */
 export async function GET(req: NextRequest) {
   const auth = req.headers.get('authorization') || '';
@@ -28,12 +36,15 @@ export async function GET(req: NextRequest) {
     return new Response(`Invalid token: ${(e as Error).message}`, { status: 401 });
   }
 
-  const groups: Array<{ id: string; displayName: string }> = [];
-  let url: string | undefined =
+  const url = new URL(req.url);
+  const withMemberCount = url.searchParams.get('withMemberCount') === 'true';
+
+  const groups: Array<{ id: string; displayName: string; memberCount?: number | null }> = [];
+  let next: string | undefined =
     'https://graph.microsoft.com/v1.0/me/transitiveMemberOf?$select=id,displayName&$top=200';
 
-  while (url) {
-    const res = await fetch(url, {
+  while (next) {
+    const res = await fetch(next, {
       headers: {
         Authorization: `Bearer ${token}`,
         ConsistencyLevel: 'eventual'
@@ -48,10 +59,42 @@ export async function GET(req: NextRequest) {
         groups.push({ id: obj.id, displayName: obj.displayName || obj.id });
       }
     }
-    url = data['@odata.nextLink'];
+    next = data['@odata.nextLink'];
   }
 
   groups.sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+  // Member-count enrichment. Done in parallel — at most a few groups per
+  // user. /members/$count requires `ConsistencyLevel: eventual`. If the
+  // call fails (e.g. our scope GroupMember.Read.All doesn't grant $count
+  // in some tenant configs), we set `memberCount: null` for that group;
+  // the UI degrades to "members" without a number.
+  if (withMemberCount && groups.length > 0) {
+    await Promise.all(
+      groups.map(async (g) => {
+        try {
+          const r = await fetch(
+            `https://graph.microsoft.com/v1.0/groups/${g.id}/members/$count`,
+            {
+              headers: {
+                Authorization: `Bearer ${token}`,
+                ConsistencyLevel: 'eventual'
+              }
+            }
+          );
+          if (!r.ok) {
+            g.memberCount = null;
+            return;
+          }
+          const txt = (await r.text()).trim();
+          const n = Number(txt);
+          g.memberCount = Number.isFinite(n) ? n : null;
+        } catch {
+          g.memberCount = null;
+        }
+      })
+    );
+  }
 
   // Surface upload permission so the UI can hide the form (or show a "no
   // permission" message) before the user fills it in. The /api/upload
