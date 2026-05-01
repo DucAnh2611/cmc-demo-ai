@@ -1,0 +1,17 @@
+node_modules
+.next
+out
+.env
+.env.local
+*.log
+.DS_Store
+.vscode
+.idea
+coverage
+dist
+*.tsbuildinfo
+
+# Local-only sample files for testing the upload feature.
+# Drop your own .pdf / .md / .docx / .txt / .html files here too — they
+# stay out of git so personal/customer drafts don't leak.
+upload-samples/

@@ -1,0 +1,53 @@
+{
+  "name": "claude-secure-rag-demo",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "predev": "tsx scripts/index-docs.ts",
+    "dev": "next dev",
+    "dev:fresh": "tsx scripts/index-docs.ts --force && next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "index-docs": "tsx scripts/index-docs.ts",
+    "setup:azure": "node scripts/setup-azure.mjs",
+    "test:connectivity": "node scripts/test-connectivity.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.1",
+    "applicationinsights": "^3.4.0",
+    "@azure/identity": "^4.5.0",
+    "@azure/msal-browser": "^3.27.0",
+    "@azure/msal-react": "^2.2.0",
+    "@azure/search-documents": "^12.1.0",
+    "@azure/storage-blob": "^12.26.0",
+    "gray-matter": "^4.0.3",
+    "mammoth": "^1.8.0",
+    "pdf-parse": "^1.1.1",
+    "jsonwebtoken": "^9.0.2",
+    "jwks-rsa": "^3.1.0",
+    "next": "14.2.18",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.0.1",
+    "remark-gfm": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/pdf-parse": "^1.1.4",
+    "@types/node": "^20.17.6",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "autoprefixer": "^10.4.20",
+    "dotenv": "^16.4.5",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "14.2.18",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.14",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  }
+}

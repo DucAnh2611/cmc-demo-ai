@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  height: 100%;
+  background: #f5f7fa;
+  color: #1a1f2c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Lightweight markdown styling — applied via .markdown wrapper. */
+.markdown h1 { @apply text-base font-semibold mt-3 mb-2; }
+.markdown h2 { @apply text-sm font-semibold mt-3 mb-1; }
+.markdown h3 { @apply text-sm font-medium mt-2 mb-1; }
+.markdown p { @apply my-2; }
+.markdown ul { @apply list-disc pl-5 my-2; }
+.markdown ol { @apply list-decimal pl-5 my-2; }
+.markdown li { @apply my-0.5; }
+.markdown pre { @apply bg-slate-100 rounded p-2 my-2 text-xs overflow-x-auto; }
+.markdown code { @apply font-mono text-xs bg-slate-100 px-1 py-0.5 rounded; }
+.markdown pre code { @apply bg-transparent p-0; }
+.markdown blockquote { @apply border-l-2 border-slate-300 pl-3 my-2 text-slate-600 italic; }
+.markdown table { @apply border-collapse my-2 text-xs; }
+.markdown th, .markdown td { @apply border border-slate-300 px-2 py-1; }
+.markdown th { @apply bg-slate-50 font-semibold; }
+.markdown a { @apply text-blue-600 underline hover:text-blue-800; }
+.markdown hr { @apply my-3 border-slate-200; }
+.markdown strong { @apply font-semibold; }
+.markdown em { @apply italic; }
+
+/* Slight tweaks when markdown is rendered inside a dark message bubble. */
+.markdown.on-dark code { @apply bg-slate-700 text-slate-100; }
+.markdown.on-dark pre { @apply bg-slate-800 text-slate-100; }
+.markdown.on-dark a { @apply text-blue-300; }
