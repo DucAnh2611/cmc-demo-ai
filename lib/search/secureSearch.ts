@@ -76,9 +76,17 @@ export async function secureSearch(
   const vector = await embedText(query);
   const client = getSearchClient();
 
-  const results = await client.search(undefined, {
+  // Hybrid retrieval: BM25 keyword search (driven by `query` as searchText)
+  // runs alongside the vector query. Azure AI Search RRF-merges both result
+  // sets server-side. This catches exact tokens like "Q3" / "EBITDA" /
+  // department codes that pure semantic vector search tends to underweight,
+  // and gives consistent recall across paraphrasings of the same question.
+  // The ACL `filter` is applied to BOTH legs — keyword hits are still
+  // security-trimmed identically to vector hits.
+  const results = await client.search(query, {
     filter,
     top,
+    searchFields: ['content', 'title'],
     select: ['id', 'content', 'title', 'sourceUrl', 'department', 'allowedGroups'],
     vectorSearchOptions: {
       queries: [

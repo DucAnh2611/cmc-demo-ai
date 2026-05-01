@@ -6,10 +6,12 @@ import { secureSearch, type RetrievedChunk } from '@/lib/search/secureSearch';
 import {
   getAnthropicClient,
   CLAUDE_MODEL,
-  SYSTEM_PROMPT,
+  buildSystemPrompt,
   buildUserMessage,
   isAnthropicConfigured
 } from '@/lib/claude/client';
+import { expandQuery } from '@/lib/claude/expandQuery';
+import { sanitizeHistory } from '@/lib/chat/sanitizeHistory';
 import { auditLog } from '@/lib/audit/logger';
 
 export const runtime = 'nodejs';
@@ -84,13 +86,16 @@ export async function POST(req: NextRequest) {
     return new Response('Invalid JSON body', { status: 400 });
   }
 
-  // Strict request shape: only `message` is allowed. Per Prompt 4 of the
-  // demo guide, the backend MUST derive groups from the user's token via
-  // Microsoft Graph — never trust group/ACL fields supplied by the client.
+  // Strict request shape: only `message` and `history` are allowed. Per
+  // Prompt 4 of the demo guide, the backend MUST derive groups from the
+  // user's token via Microsoft Graph — never trust group/ACL fields supplied
+  // by the client. `history` is permitted because it's just the user's own
+  // prior turns echoed back; it cannot bypass ACL (retrieval still uses the
+  // server-derived groups for the NEW turn only).
   if (!body || typeof body !== 'object') {
     return new Response('Body must be a JSON object', { status: 400 });
   }
-  const ALLOWED_KEYS = new Set(['message']);
+  const ALLOWED_KEYS = new Set(['message', 'history']);
   const extras = Object.keys(body as Record<string, unknown>).filter((k) => !ALLOWED_KEYS.has(k));
   if (extras.length > 0) {
     return new Response(
@@ -103,11 +108,63 @@ export async function POST(req: NextRequest) {
   const message = (((body as { message?: unknown }).message as string) || '').trim();
   if (!message) return new Response('Missing message', { status: 400 });
 
+  // Sanitise client-supplied conversation history. See lib/chat/sanitizeHistory
+  // for the rules (shape filter, length cap, Anthropic alternation, trailing
+  // user drop). Backend stays stateless — history is never re-embedded or
+  // used for retrieval; only the new `message` drives ACL-filtered search.
+  const MAX_HISTORY_TURNS = 8;
+  const MAX_TURN_CHARS = 8000;
+  const sanitised = sanitizeHistory((body as { history?: unknown }).history, {
+    maxTurns: MAX_HISTORY_TURNS,
+    maxTurnChars: MAX_TURN_CHARS
+  });
+  if (sanitised.error) {
+    return new Response(sanitised.error, { status: 400 });
+  }
+  const history = sanitised.history;
+
   // Cache key intentionally derived from the access token (default behavior),
   // not from user.oid. A re-login produces a new token, which busts the cache
   // and re-fetches groups from Graph — required for Scenario E (Section 7.6).
   const groups = await getUserGroups(token);
-  const allChunks = await secureSearch(message, groups, { top: 5 });
+
+  // Query expansion → hybrid search per variant → merge by chunk id.
+  //
+  // We ask Haiku for ≤2 paraphrases (e.g. "compensation policy" →
+  // "salary structure", "pay guidelines"), then search all variants in
+  // parallel using hybrid retrieval (BM25 + vector). Hits are merged by id
+  // keeping the highest score, then we take the top-5 overall. This boosts
+  // recall on synonym/phrasing variations without trusting the LLM to pick
+  // documents — every search leg goes through Azure's ACL filter, and the
+  // post-merge defense-in-depth check below re-validates allowedGroups.
+  const variants = await expandQuery(message);
+  const perVariantResults = await Promise.all(
+    variants.map((v) => secureSearch(v, groups, { top: 5 }))
+  );
+  const mergedById = new Map<string, RetrievedChunk>();
+  for (const results of perVariantResults) {
+    for (const c of results) {
+      const existing = mergedById.get(c.id);
+      if (!existing || (c.score ?? 0) > (existing.score ?? 0)) {
+        mergedById.set(c.id, c);
+      }
+    }
+  }
+  const allChunks = Array.from(mergedById.values())
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+    .slice(0, 5);
+
+  console.log('[chat] retrieval summary', {
+    userOid: user.oid,
+    originalQuery: message,
+    historyTurns: history.length,
+    variantCount: variants.length,
+    perVariantCounts: perVariantResults.map((r) => r.length),
+    mergedUniqueIds: mergedById.size,
+    topChunkCount: allChunks.length,
+    topChunkTitles: allChunks.map((c) => c.title),
+    topChunkScores: allChunks.map((c) => c.score)
+  });
 
   // Defense-in-depth: re-verify each chunk's allowedGroups against the
   // user's groups before doing anything else with the chunk. The Azure AI
@@ -165,6 +222,25 @@ export async function POST(req: NextRequest) {
           const anthropic = getAnthropicClient();
           const userMsg = buildUserMessage(message, chunks);
 
+          // Personalize the system prompt with the logged-in user's display
+          // name (from the Entra `name` claim) and the departments visible
+          // across the chunks they're authorized to see. The result: Claude
+          // addresses them in second person and frames the answer to their
+          // scope — e.g. "Alice, your team's compensation review …" instead
+          // of a generic "the document states …".
+          const visibleDepartments = Array.from(
+            new Set(chunks.map((c) => c.department).filter((d): d is string => !!d))
+          );
+          const systemPrompt = buildSystemPrompt({
+            name: user.name,
+            departments: visibleDepartments
+          });
+
+          // Conversation history (validated above) goes BEFORE the new turn.
+          // The new turn is the only one that carries the retrieved RAG
+          // context — prior turns are sent as plain text. This keeps the
+          // prompt small and ensures retrieval re-runs against current ACL
+          // for every turn, not against stale cached chunks.
           const llmStream = await anthropic.messages.stream({
             model: CLAUDE_MODEL,
             // 2048 leaves room for fluent Vietnamese output (which uses ~1.5×
@@ -178,8 +254,11 @@ export async function POST(req: NextRequest) {
             // answer shape. Default 1.0 makes Haiku flip between "summarise"
             // and "refuse" on borderline-vague queries.
             temperature: 0.3,
-            system: SYSTEM_PROMPT,
-            messages: [{ role: 'user', content: userMsg }]
+            system: systemPrompt,
+            messages: [
+              ...history.map((t) => ({ role: t.role, content: t.content })),
+              { role: 'user', content: userMsg }
+            ]
           });
 
           for await (const event of llmStream) {

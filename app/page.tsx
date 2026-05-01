@@ -36,6 +36,58 @@ interface DocSummary {
   sourceUrl?: string;
 }
 
+// Per-session conversation memory. Lives in sessionStorage (cleared when
+// the tab closes) and is keyed by the signed-in user's UPN so two accounts
+// on the same machine don't see each other's history. The server is
+// stateless — every request carries the last MAX_HISTORY_TURNS turns from
+// here. Mirrors the cap enforced server-side in app/api/chat/route.ts.
+const STORAGE_KEY_PREFIX = 'chat-history:';
+const MAX_HISTORY_TURNS = 8;
+
+function storageKeyFor(upn: string | undefined): string | null {
+  if (!upn) return null;
+  return STORAGE_KEY_PREFIX + upn.toLowerCase();
+}
+
+function loadHistory(upn: string | undefined): Message[] {
+  const key = storageKeyFor(upn);
+  if (!key || typeof window === 'undefined') return [];
+  try {
+    const raw = window.sessionStorage.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (m): m is Message =>
+        m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string'
+    );
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(upn: string | undefined, messages: Message[]): void {
+  const key = storageKeyFor(upn);
+  if (!key || typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(key, JSON.stringify(messages));
+  } catch {
+    // sessionStorage full / disabled — silently drop. The in-memory state
+    // still works for the active session; only persistence-across-reload
+    // is lost.
+  }
+}
+
+function clearHistory(upn: string | undefined): void {
+  const key = storageKeyFor(upn);
+  if (!key || typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.removeItem(key);
+  } catch {
+    /* ignore */
+  }
+}
+
 export default function ChatPage() {
   const { instance, accounts } = useMsal();
   const isAuthenticated = useIsAuthenticated();
@@ -58,6 +110,27 @@ export default function ChatPage() {
 
   const account = accounts[0];
 
+  // Hydrate from sessionStorage once we know which user is signed in.
+  // We do this in an effect (not initial useState) so the upn is available;
+  // the empty initial state is fine because the effect runs before paint.
+  const upnForStorage = account?.username;
+  useEffect(() => {
+    if (!upnForStorage) return;
+    const restored = loadHistory(upnForStorage);
+    if (restored.length > 0) setMessages(restored);
+  }, [upnForStorage]);
+
+  // Persist on every change. Trim to cap before saving so storage doesn't
+  // grow unbounded on long demo sessions.
+  useEffect(() => {
+    if (!upnForStorage) return;
+    const trimmed =
+      messages.length > MAX_HISTORY_TURNS
+        ? messages.slice(messages.length - MAX_HISTORY_TURNS)
+        : messages;
+    saveHistory(upnForStorage, trimmed);
+  }, [messages, upnForStorage]);
+
   const acquireToken = useCallback(async (): Promise<string> => {
     if (!account) throw new Error('No active account');
     try {
@@ -72,7 +145,18 @@ export default function ChatPage() {
   if (!isAuthenticated || accounts.length === 0) return null;
 
   const handleSignOut = () => {
+    // Clear conversation memory before redirecting. sessionStorage dies with
+    // the tab anyway, but explicit wipe means a follow-up sign-in (same tab,
+    // different account) starts fresh.
+    clearHistory(upnForStorage);
+    setMessages([]);
     instance.logoutRedirect({ account, postLogoutRedirectUri: '/login' });
+  };
+
+  const handleClearChat = () => {
+    if (busy) return;
+    clearHistory(upnForStorage);
+    setMessages([]);
   };
 
   const handleSend = async () => {
@@ -83,6 +167,16 @@ export default function ChatPage() {
 
     const userMsg: Message = { role: 'user', content: text };
     const assistantMsg: Message = { role: 'assistant', content: '', citations: [] };
+
+    // Build the history payload from the CURRENT messages state — i.e. the
+    // turns that already exist BEFORE this new user turn. We strip citation
+    // metadata (server doesn't need it) and cap at MAX_HISTORY_TURNS to
+    // mirror the server-side limit.
+    const historyPayload = messages
+      .slice(-MAX_HISTORY_TURNS)
+      .map((m) => ({ role: m.role, content: m.content }))
+      .filter((m) => m.content.trim().length > 0);
+
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
 
     try {
@@ -90,7 +184,7 @@ export default function ChatPage() {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text })
+        body: JSON.stringify({ message: text, history: historyPayload })
       });
 
       if (!res.ok || !res.body) {
@@ -206,6 +300,26 @@ export default function ChatPage() {
           >
             How it works
           </Link>
+          {/* Memory cap badge + Clear. Visible cap reinforces the "AI sees
+              only what you can see" story during demo — every turn re-runs
+              retrieval against current ACL, and Clear gives a clean reset. */}
+          <div className="ml-1 flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1">
+            <span
+              className="text-[10px] font-medium uppercase tracking-wide text-slate-500"
+              title={`Last ${MAX_HISTORY_TURNS} turns are sent with each question for follow-up context.`}
+            >
+              {Math.min(messages.length, MAX_HISTORY_TURNS)}/{MAX_HISTORY_TURNS} turns
+            </span>
+            <button
+              type="button"
+              onClick={handleClearChat}
+              disabled={busy || messages.length === 0}
+              className="rounded px-1.5 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-white hover:text-slate-900 disabled:opacity-40"
+              title="Clear conversation memory"
+            >
+              Clear
+            </button>
+          </div>
         </nav>
 
         {/* User pill */}
