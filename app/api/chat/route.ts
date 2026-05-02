@@ -290,58 +290,45 @@ export async function POST(req: NextRequest) {
       } finally {
         const fullResponse = previewParts.join('');
 
-        // Decide whether to show sources to the user.
+        // Sources mirror what the answer ON SCREEN actually references.
+        // Match each retrieved chunk's title as a substring in the response
+        // text. If the answer cites nothing — a refusal, an off-topic
+        // reply, a general "what's today's date" — the Sources block stays
+        // empty by construction. No brittle refusal-phrase detection
+        // needed, no language-specific text matching.
         //
-        // Hide sources when:
-        //   - chunks.length === 0  : nothing was retrieved (post-ACL). Per
-        //     SYSTEM_PROMPT, Claude replies with the refusal sentence in
-        //     this case. Showing a "Sources" header with nothing under it
-        //     would just look broken.
-        //   - usedFallback === true : Anthropic was unreachable / errored,
-        //     so the synthetic fallback ran. The fallback's body already
-        //     enumerates the chunks inline; the sources block would be
-        //     redundant and visually confusing alongside the "[fallback
-        //     mode — Claude not called: …]" preface.
+        // Normalisation BEFORE the substring match: lowercase + collapse
+        // any run of separators (whitespace, hyphens, underscores, dots,
+        // bullets, em/en dashes, quotes) into a single space. Required
+        // because uploaded .txt / .docx files without front-matter get
+        // titled from the filename (e.g. `town-hall-notes-2026-q1`), but
+        // Claude humanises that in the answer text (`Town Hall Notes 2026
+        // Q1`). A literal substring match would miss the citation. After
+        // normalisation, both forms collapse to `town hall notes 2026 q1`
+        // and the match succeeds.
         //
-        // Both checks are server-side flags set above — no need to parse
-        // the response text, which means the refusal sentence can stay in
-        // whatever language SYSTEM_PROMPT chooses.
+        // Dedupe by title because one source doc is split into N chunks
+        // that share a title; without dedupe a single citation match would
+        // render N identical rows.
         //
-        // Audit log is independent — we still record the chunks that were
-        // RETRIEVED (post-ACL filter), not what was DISPLAYED. Compliance
-        // cares about what the system pulled from the index, not what the
-        // UI rendered.
-        // Refusal text detection. SYSTEM_PROMPT instructs Claude to reply
-        // EXACTLY "I do not have access to that information." in the
-        // empty-context case. In practice Claude also emits this same
-        // sentence when chunks exist but score weakly against the question
-        // (low-confidence refusal). Either way, when this exact string is
-        // the answer, the Sources block would be misleading — the user is
-        // being told they have no access, but the panel below would list
-        // five docs. Detect the literal phrase and suppress sources.
-        const REFUSAL_PHRASE = 'I do not have access to that information.';
-        const trimmedResponse = fullResponse.trim();
-        const isRefusal =
-          trimmedResponse === REFUSAL_PHRASE ||
-          trimmedResponse.startsWith(REFUSAL_PHRASE);
-
-        const hideSources = chunks.length === 0 || usedFallback || isRefusal;
-        let displayedCitations: typeof chunks = [];
-        if (!hideSources) {
-          // Filter to chunks Claude actually referenced by title. Falls back
-          // to all retrieved chunks when Claude answered without using the
-          // [Source: <title>] convention — same behaviour as before.
-          const usedCitations = chunks.filter((c) => fullResponse.includes(c.title));
-          displayedCitations = usedCitations.length > 0 ? usedCitations : chunks;
-        }
-
-        // Dedupe by title — a single source doc is split into N chunks that
-        // all share a title, so a substring-includes match yields one entry
-        // per chunk. The Sources list should show the source ONCE (matches
-        // how /api/my-docs dedupes by title). Keep the first chunk's id as
-        // the click handle so opening the source modal still works.
+        // Audit log is independent — it still records every chunk that was
+        // RETRIEVED (post-ACL filter), regardless of what the UI rendered.
+        // Compliance cares about what was pulled from the index, not what
+        // the user happened to see in the Sources block.
+        const normForMatch = (s: string): string =>
+          s
+            .toLowerCase()
+            .replace(/[\s\-_·.,;:!?'"()\[\]{}—–]+/g, ' ')
+            .trim();
+        const responseNorm = normForMatch(fullResponse);
+        const matchedCitations = chunks.filter((c) => {
+          const titleNorm = normForMatch(c.title);
+          // Skip degenerate empty titles defensively — would otherwise match
+          // every response.
+          return titleNorm.length > 0 && responseNorm.includes(titleNorm);
+        });
         const seenTitles = new Set<string>();
-        const dedupedCitations = displayedCitations.filter((c) => {
+        const dedupedCitations = matchedCitations.filter((c) => {
           if (seenTitles.has(c.title)) return false;
           seenTitles.add(c.title);
           return true;
