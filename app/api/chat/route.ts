@@ -290,17 +290,65 @@ export async function POST(req: NextRequest) {
       } finally {
         const fullResponse = previewParts.join('');
 
-        // Filter citations to only chunks whose title appears in the answer
-        // text. Substring match is robust enough for our titles (each is a
-        // distinctive 3-5 word phrase). Falls back to all retrieved chunks
-        // when nothing matches — covers the case where Claude answered
-        // without using the [Source: <title>] convention, so the user still
-        // sees what was authorized.
-        const usedCitations = chunks.filter((c) => fullResponse.includes(c.title));
-        const finalCitations = usedCitations.length > 0 ? usedCitations : chunks;
+        // Decide whether to show sources to the user.
+        //
+        // Hide sources when:
+        //   - chunks.length === 0  : nothing was retrieved (post-ACL). Per
+        //     SYSTEM_PROMPT, Claude replies with the refusal sentence in
+        //     this case. Showing a "Sources" header with nothing under it
+        //     would just look broken.
+        //   - usedFallback === true : Anthropic was unreachable / errored,
+        //     so the synthetic fallback ran. The fallback's body already
+        //     enumerates the chunks inline; the sources block would be
+        //     redundant and visually confusing alongside the "[fallback
+        //     mode — Claude not called: …]" preface.
+        //
+        // Both checks are server-side flags set above — no need to parse
+        // the response text, which means the refusal sentence can stay in
+        // whatever language SYSTEM_PROMPT chooses.
+        //
+        // Audit log is independent — we still record the chunks that were
+        // RETRIEVED (post-ACL filter), not what was DISPLAYED. Compliance
+        // cares about what the system pulled from the index, not what the
+        // UI rendered.
+        // Refusal text detection. SYSTEM_PROMPT instructs Claude to reply
+        // EXACTLY "I do not have access to that information." in the
+        // empty-context case. In practice Claude also emits this same
+        // sentence when chunks exist but score weakly against the question
+        // (low-confidence refusal). Either way, when this exact string is
+        // the answer, the Sources block would be misleading — the user is
+        // being told they have no access, but the panel below would list
+        // five docs. Detect the literal phrase and suppress sources.
+        const REFUSAL_PHRASE = 'I do not have access to that information.';
+        const trimmedResponse = fullResponse.trim();
+        const isRefusal =
+          trimmedResponse === REFUSAL_PHRASE ||
+          trimmedResponse.startsWith(REFUSAL_PHRASE);
+
+        const hideSources = chunks.length === 0 || usedFallback || isRefusal;
+        let displayedCitations: typeof chunks = [];
+        if (!hideSources) {
+          // Filter to chunks Claude actually referenced by title. Falls back
+          // to all retrieved chunks when Claude answered without using the
+          // [Source: <title>] convention — same behaviour as before.
+          const usedCitations = chunks.filter((c) => fullResponse.includes(c.title));
+          displayedCitations = usedCitations.length > 0 ? usedCitations : chunks;
+        }
+
+        // Dedupe by title — a single source doc is split into N chunks that
+        // all share a title, so a substring-includes match yields one entry
+        // per chunk. The Sources list should show the source ONCE (matches
+        // how /api/my-docs dedupes by title). Keep the first chunk's id as
+        // the click handle so opening the source modal still works.
+        const seenTitles = new Set<string>();
+        const dedupedCitations = displayedCitations.filter((c) => {
+          if (seenTitles.has(c.title)) return false;
+          seenTitles.add(c.title);
+          return true;
+        });
 
         send('citations', {
-          chunks: finalCitations.map((c) => ({
+          chunks: dedupedCitations.map((c) => ({
             id: c.id,
             title: c.title,
             department: c.department,
@@ -313,8 +361,9 @@ export async function POST(req: NextRequest) {
           userId: user.oid,
           upn: user.upn,
           query: message,
-          retrievedDocIds: finalCitations.map((c) => c.id),
-          retrievedTitles: finalCitations.map((c) => c.title),
+          // Record what was retrieved (post-ACL), not what was displayed.
+          retrievedDocIds: chunks.map((c) => c.id),
+          retrievedTitles: chunks.map((c) => c.title),
           responsePreview,
           groupCount: groups.length,
           timestamp: new Date().toISOString()
