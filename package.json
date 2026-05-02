@@ -13,6 +13,7 @@
     "index-docs": "tsx scripts/index-docs.ts",
     "setup:azure": "node scripts/setup-azure.mjs",
     "test:connectivity": "node scripts/test-connectivity.mjs",
+    "verify:services": "node scripts/verify-services.mjs",
     "test": "vitest run"
   },
   "dependencies": {
