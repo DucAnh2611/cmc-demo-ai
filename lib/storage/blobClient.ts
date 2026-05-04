@@ -1,4 +1,5 @@
 import { BlobServiceClient, type ContainerClient } from '@azure/storage-blob';
+import { svcLog } from '@/lib/devLog';
 
 const CONN = process.env.AZURE_STORAGE_CONNECTION_STRING || '';
 const CONTAINER_NAME = process.env.AZURE_STORAGE_CONTAINER || 'uploads';
@@ -41,10 +42,17 @@ export interface BlobUploadInput {
 export async function uploadBlob(input: BlobUploadInput): Promise<string> {
   const container = await getUploadsContainer();
   const block = container.getBlockBlobClient(input.blobName);
+  const t0 = Date.now();
   await block.uploadData(input.buffer, {
     blobHTTPHeaders: { blobContentType: input.contentType },
     // Azure Blob metadata values must be ASCII; sanitise upstream.
     metadata: input.metadata
+  });
+  svcLog({
+    service: 'blob',
+    op: 'upload',
+    details: `${input.blobName} · ${input.buffer.length}B`,
+    ms: Date.now() - t0
   });
   return block.url; // private URL — anonymous access denied; auth via account key only
 }
@@ -56,9 +64,19 @@ export async function downloadBlob(blobName: string): Promise<{
 } | null> {
   const container = await getUploadsContainer();
   const block = container.getBlockBlobClient(blobName);
-  if (!(await block.exists())) return null;
+  const t0 = Date.now();
+  if (!(await block.exists())) {
+    svcLog({ service: 'blob', op: 'download', details: `${blobName} · NOT FOUND`, ms: Date.now() - t0 });
+    return null;
+  }
   const props = await block.getProperties();
   const dl = await block.downloadToBuffer();
+  svcLog({
+    service: 'blob',
+    op: 'download',
+    details: `${blobName} · ${dl.length}B`,
+    ms: Date.now() - t0
+  });
   return {
     buffer: dl,
     contentType: props.contentType || 'application/octet-stream',

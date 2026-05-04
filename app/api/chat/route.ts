@@ -13,6 +13,7 @@ import {
 import { expandQuery } from '@/lib/claude/expandQuery';
 import { sanitizeHistory } from '@/lib/chat/sanitizeHistory';
 import { auditLog } from '@/lib/audit/logger';
+import { svcLog } from '@/lib/devLog';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -241,6 +242,7 @@ export async function POST(req: NextRequest) {
           // context — prior turns are sent as plain text. This keeps the
           // prompt small and ensures retrieval re-runs against current ACL
           // for every turn, not against stale cached chunks.
+          const claudeT0 = Date.now();
           const llmStream = await anthropic.messages.stream({
             model: CLAUDE_MODEL,
             // 2048 leaves room for fluent Vietnamese output (which uses ~1.5×
@@ -268,6 +270,14 @@ export async function POST(req: NextRequest) {
               send('token', { text });
             }
           }
+          // finalMessage() resolves with usage tokens — log after stream ends.
+          const final = await llmStream.finalMessage().catch(() => null);
+          svcLog({
+            service: 'claude',
+            op: 'stream',
+            details: `${CLAUDE_MODEL} · ${final?.usage?.input_tokens ?? '?'} in / ${final?.usage?.output_tokens ?? '?'} out`,
+            ms: Date.now() - claudeT0
+          });
         }
         send('done', { fallback: usedFallback });
       } catch (e) {

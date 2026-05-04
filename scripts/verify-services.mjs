@@ -24,6 +24,7 @@
 //
 
 import { readFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, isAbsolute, resolve } from 'node:path';
 
@@ -327,6 +328,204 @@ async function liveProbeBlob() {
   }
 }
 
+// ---------- Azure resource tier + spend probe (via `az` CLI) ----------
+
+/**
+ * Run an `az` CLI command and return trimmed stdout, or null on any failure
+ * (CLI not installed, not logged in, command rejected, no permission).
+ * Always fail-soft — the rest of the script must keep working without `az`.
+ */
+function runAz(args) {
+  try {
+    return execSync(`az ${args}`, {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      maxBuffer: 8 * 1024 * 1024
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/** Parse JSON output from `az`, returning null instead of throwing. */
+function tryParseJson(s) {
+  if (!s || s === 'null') return null;
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+/** Extract `<name>` from `https://<name>.something.azure.com/...` style URLs. */
+function hostnameLeftLabel(url) {
+  try {
+    const u = new URL(url);
+    const parts = u.hostname.split('.');
+    return parts[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Extract AccountName=… from a storage connection string. */
+function storageAccountFromConn(conn) {
+  if (!conn) return null;
+  const m = /AccountName=([^;]+)/.exec(conn);
+  return m ? m[1] : null;
+}
+
+/** Pretty-print a tier so the cost implication is visible at a glance. */
+function searchTierNote(skuName) {
+  const t = (skuName || '').toLowerCase();
+  if (t === 'free') return 'Free (F0) — $0/mo · 50 MB · 3 indexes max';
+  if (t === 'basic') return 'Basic — ~$75/mo · 2 GB · vector search supported';
+  if (t.startsWith('standard')) return `${skuName} — paid tier, see https://azure.microsoft.com/pricing/details/search/`;
+  return skuName;
+}
+
+async function probeAzureTiers() {
+  // ----- gate on az availability -----
+  const azVer = runAz('--version');
+  if (!azVer) {
+    skip('az CLI not found in PATH — install: https://learn.microsoft.com/cli/azure/install-azure-cli');
+    return;
+  }
+
+  // ----- subscription identity -----
+  const subRaw = runAz('account show -o json');
+  const sub = tryParseJson(subRaw);
+  if (!sub) {
+    skip('not logged in — run `az login`, then re-run this script');
+    return;
+  }
+  ok(`subscription: "${sub.name}" (${sub.id}) — state: ${sub.state}`);
+  if (sub.user?.name) note(`signed in as: ${sub.user.name}`);
+  // List other subscriptions this account can see — useful when the
+  // demo resources live in a different sub (common in enterprise
+  // setups where the dev signs in with a personal account but the
+  // resources are on a corporate tenant).
+  const allSubsRaw = runAz('account list --query "[].{name:name, id:id, isDefault:isDefault}" -o json');
+  const allSubs = tryParseJson(allSubsRaw);
+  if (Array.isArray(allSubs) && allSubs.length > 1) {
+    note(`other subscriptions visible to this account (${allSubs.length - 1}):`);
+    for (const s of allSubs) {
+      if (s.id !== sub.id) note(`  ${s.name} (${s.id}) — switch: az account set --subscription ${s.id}`);
+    }
+  }
+
+  // ----- Search service tier -----
+  const searchEndpoint = process.env.AZURE_SEARCH_ENDPOINT;
+  const searchName = hostnameLeftLabel(searchEndpoint);
+  if (!searchName) {
+    skip('AZURE_SEARCH_ENDPOINT missing or malformed — cannot resolve Search resource name');
+  } else {
+    // Cross-subscription list filter — finds the resource without us
+    // needing to know its resource group.
+    const raw = runAz(
+      `search service list --query "[?name=='${searchName}'] | [0].{rg:resourceGroup, sku:sku.name, replicas:replicaCount, partitions:partitionCount, location:location}" -o json`
+    );
+    const data = tryParseJson(raw);
+    if (data) {
+      ok(
+        `Search "${searchName}" — tier: ${(data.sku || 'unknown').toUpperCase()}` +
+          ` · rg: ${data.rg} · ${data.replicas}×${data.partitions} (replicas×partitions) · ${data.location}`
+      );
+      note(searchTierNote(data.sku));
+    } else {
+      skip(`Search "${searchName}" not in current subscription — data-plane key works but az has no Reader role here. Switch subscriptions or run: az role assignment create --role Reader --assignee <upn> --scope /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Search/searchServices/${searchName}`);
+    }
+  }
+
+  // ----- Storage account SKU + access tier -----
+  const blobConn = process.env.AZURE_STORAGE_CONNECTION_STRING;
+  const storageName = storageAccountFromConn(blobConn);
+  if (!storageName) {
+    skip('AZURE_STORAGE_CONNECTION_STRING missing or malformed — cannot resolve Storage account name');
+  } else {
+    const raw = runAz(
+      `storage account list --query "[?name=='${storageName}'] | [0].{rg:resourceGroup, sku:sku.name, kind:kind, accessTier:accessTier, location:location}" -o json`
+    );
+    const data = tryParseJson(raw);
+    if (data) {
+      ok(
+        `Storage "${storageName}" — ${data.kind}/${data.sku}/${data.accessTier || 'no-access-tier'}` +
+          ` · rg: ${data.rg} · ${data.location}`
+      );
+      note('LRS = locally redundant (cheapest); GRS = geo-redundant. Hot = fastest reads, Cool = cheaper for cold data');
+    } else {
+      skip(`Storage "${storageName}" not in current subscription — likely lives in a different sub. Connection string still works (it carries its own AccountKey).`);
+    }
+  }
+
+  // ----- Azure OpenAI SKU + per-deployment SKU -----
+  const aoaiEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
+  const aoaiName = hostnameLeftLabel(aoaiEndpoint);
+  if (!aoaiName) {
+    skip('AZURE_OPENAI_ENDPOINT missing or malformed — cannot resolve OpenAI resource name');
+  } else {
+    const raw = runAz(
+      `cognitiveservices account list --query "[?name=='${aoaiName}'] | [0].{rg:resourceGroup, sku:sku.name, kind:kind, location:location}" -o json`
+    );
+    const data = tryParseJson(raw);
+    if (data) {
+      ok(
+        `OpenAI "${aoaiName}" — ${data.kind}/${data.sku}` +
+          ` · rg: ${data.rg} · ${data.location}`
+      );
+      // Per-deployment SKU + capacity (Standard = pay-per-token, ProvisionedManaged = reserved PTU).
+      const depsRaw = runAz(
+        `cognitiveservices account deployment list -g "${data.rg}" -n "${aoaiName}" --query "[].{name:name, model:properties.model.name, sku:sku.name, capacity:sku.capacity}" -o json`
+      );
+      const deps = tryParseJson(depsRaw);
+      if (Array.isArray(deps) && deps.length > 0) {
+        for (const d of deps) {
+          note(
+            `deployment "${d.name}" → model: ${d.model} · sku: ${d.sku} · capacity: ${d.capacity ?? '?'}K TPM`
+          );
+        }
+      } else {
+        note('no deployments visible');
+      }
+    } else {
+      skip(`OpenAI "${aoaiName}" not in current subscription — likely lives in a different sub. Data-plane API key still works.`);
+    }
+  }
+
+  // ----- last-7-days consumption (the actual "did I owe money" answer) -----
+  const today = new Date().toISOString().slice(0, 10);
+  const weekAgo = new Date(Date.now() - 7 * 86400 * 1000).toISOString().slice(0, 10);
+  const usageRaw = runAz(
+    `consumption usage list --start-date ${weekAgo} --end-date ${today} --query "[].{service:meterDetails.serviceName, cost:pretaxCost, currency:currency}" -o json`
+  );
+  const usage = tryParseJson(usageRaw);
+  if (Array.isArray(usage)) {
+    if (usage.length === 0) {
+      ok(`last 7 days consumption in subscription "${sub.name}": 0.00`);
+      note('zero cost in THIS subscription. If the demo resources above showed SKIP for tier checks, costs are billed against the OTHER subscription that owns them — switch with `az account set --subscription <id>` and re-run.');
+      note('other plausible causes: free tier, free credits absorbing usage, 24-48h billing latency');
+    } else {
+      const byService = new Map();
+      let currency = '?';
+      for (const u of usage) {
+        const svc = u.service || 'unknown';
+        const cost = Number(u.cost || 0);
+        byService.set(svc, (byService.get(svc) || 0) + cost);
+        if (u.currency) currency = u.currency;
+      }
+      const total = Array.from(byService.values()).reduce((a, b) => a + b, 0);
+      ok(`last 7 days consumption: ${total.toFixed(4)} ${currency} across ${byService.size} service(s)`);
+      const top = [...byService.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+      for (const [svc, c] of top) {
+        note(`  ${svc}: ${c.toFixed(4)} ${currency}`);
+      }
+    }
+  } else {
+    skip('consumption usage query failed — likely missing Billing Reader role on the subscription');
+    note('not fatal: you can still inspect costs via Portal → Cost Management → Cost analysis');
+  }
+}
+
 // ---------- Section blocks (env vars + live probe) ----------
 
 const sections = [
@@ -392,6 +591,17 @@ const sections = [
     }
     // No live probe — telemetry ingestion is fire-and-forget; verified
     // when the running app emits its first trace.
+  },
+  {
+    // Reads NO env vars — uses `az` CLI auth context. Listed here so it
+    // runs in the same loop and reports through the same OK/SKIP/FAIL
+    // counters. Resource names are derived from the endpoint env vars
+    // already loaded above (Search/Storage/OpenAI), no separate config.
+    title: '8. Azure resource tiers + recent spend (requires `az` CLI)',
+    vars: () => {
+      // No env vars to print here — derived from earlier sections.
+    },
+    live: probeAzureTiers
   }
 ];
 

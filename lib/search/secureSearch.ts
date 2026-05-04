@@ -1,5 +1,6 @@
 import { SearchClient, AzureKeyCredential } from '@azure/search-documents';
 import { embedText } from './embedder';
+import { svcLog } from '@/lib/devLog';
 
 export interface SearchableChunk {
   id: string;
@@ -83,6 +84,7 @@ export async function secureSearch(
   // and gives consistent recall across paraphrasings of the same question.
   // The ACL `filter` is applied to BOTH legs — keyword hits are still
   // security-trimmed identically to vector hits.
+  const t0 = Date.now();
   const results = await client.search(query, {
     filter,
     top,
@@ -113,5 +115,11 @@ export async function secureSearch(
       score: item.score
     });
   }
+  svcLog({
+    service: 'search',
+    op: 'hybrid query',
+    details: `"${query.slice(0, 30)}${query.length > 30 ? '…' : ''}" → ${chunks.length} chunks`,
+    ms: Date.now() - t0
+  });
   return chunks;
 }

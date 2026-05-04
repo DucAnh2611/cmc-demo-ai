@@ -5,7 +5,7 @@ import { verifyAccessToken } from '@/lib/auth/verifyToken';
 import { getUserGroups } from '@/lib/auth/getUserGroups';
 import { embedBatch } from '@/lib/search/embedder';
 import { getSearchClient } from '@/lib/search/secureSearch';
-import { chunkText } from '@/lib/utils/chunker';
+import { breakLongTokens, chunkText } from '@/lib/utils/chunker';
 import { isBlobConfigured, uploadBlob } from '@/lib/storage/blobClient';
 import {
   ALLOWED_EXTENSIONS,
@@ -144,8 +144,34 @@ export async function POST(req: NextRequest) {
   const results: UploadResult[] = [];
   const indexBatch: Record<string, unknown>[] = [];
 
+  console.log('[upload] batch start', {
+    fileCount: files.length,
+    requestedGroups,
+    department,
+    uploaderOid: user.oid,
+    uploaderUpn: user.upn
+  });
+
   for (const file of files) {
+    // STEP 1: file received — log everything the browser told us. Useful
+    // when a PDF refuses to upload — often the browser sent
+    // application/octet-stream and our normaliser had to fall back to
+    // extension matching.
+    const ct = normaliseContentType(file.name, file.type);
+    console.log('[upload] file received', {
+      filename: file.name,
+      sizeBytes: file.size,
+      browserMime: file.type || '(empty)',
+      normalisedMime: ct,
+      ext: extOf(file.name)
+    });
+
     if (file.size > MAX_FILE_SIZE) {
+      console.warn('[upload] REJECT — too large', {
+        filename: file.name,
+        sizeBytes: file.size,
+        max: MAX_FILE_SIZE
+      });
       results.push({
         filename: file.name,
         ok: false,
@@ -154,8 +180,12 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
-    const ct = normaliseContentType(file.name, file.type);
     if (!isSupported(ct)) {
+      console.warn('[upload] REJECT — unsupported MIME', {
+        filename: file.name,
+        normalisedMime: ct,
+        allowed: ALLOWED_EXTENSIONS
+      });
       results.push({
         filename: file.name,
         ok: false,
@@ -165,15 +195,64 @@ export async function POST(req: NextRequest) {
     }
 
     try {
+      // STEP 2: read file buffer.
       const buffer = Buffer.from(await file.arrayBuffer());
+      console.log('[upload] buffer read', {
+        filename: file.name,
+        bufferBytes: buffer.length,
+        // First 4 bytes tell you a lot at a glance — `%PDF` for valid PDF,
+        // `PK..` for docx/zip, etc. Useful when a "PDF" upload turns out
+        // to be HTML or an error page.
+        magicHex: buffer.slice(0, 8).toString('hex'),
+        magicAscii: buffer.slice(0, 8).toString('ascii').replace(/[^\x20-\x7e]/g, '.')
+      });
+
+      // STEP 3: extract text. PDFs go through pdf-parse — common failure
+      // modes here: image-only PDFs (scanned docs), encrypted PDFs,
+      // malformed PDFs that pdf-parse throws on.
+      const extractStart = Date.now();
       const extracted = await extract(buffer, file.name, ct);
+      console.log('[upload] extracted', {
+        filename: file.name,
+        ms: Date.now() - extractStart,
+        detectedMime: extracted.detectedContentType,
+        title: extracted.title,
+        textLength: extracted.text?.length || 0,
+        textPreview: (extracted.text || '').slice(0, 120).replace(/\s+/g, ' ').trim()
+      });
+
       if (!extracted.text || extracted.text.trim().length < 10) {
+        console.warn('[upload] REJECT — extracted text empty/too short', {
+          filename: file.name,
+          textLength: extracted.text?.length || 0,
+          hint: ct === 'application/pdf'
+            ? 'image-only / scanned PDFs need OCR — try a text-based PDF'
+            : 'file may be empty, encrypted, or unparseable'
+        });
         results.push({
           filename: file.name,
           ok: false,
           error: 'Extracted text is empty or too short. Is the file readable / not image-only?'
         });
         continue;
+      }
+
+      // STEP 3.5: break up extra-long tokens before indexing.
+      // Azure AI Search's default Lucene analyzer rejects single tokens
+      // longer than 128 chars with "Command token too long: 128" — common
+      // for PDFs that stitch words together (e.g. table cells with no
+      // spaces, long URLs, base64 fragments). Insert a space every 100
+      // chars in any non-whitespace run that long. Also applied to the
+      // title to be safe.
+      const safeText = breakLongTokens(extracted.text, 100);
+      const safeTitle = breakLongTokens(extracted.title.slice(0, 256), 100);
+      if (safeText.length !== extracted.text.length) {
+        console.log('[upload] broke long tokens', {
+          filename: file.name,
+          before: extracted.text.length,
+          after: safeText.length,
+          inserted: safeText.length - extracted.text.length
+        });
       }
 
       const docId = randomUUID().replace(/-/g, '');
@@ -185,12 +264,26 @@ export async function POST(req: NextRequest) {
         ? `docs/${department}/${docId.slice(0, 8)}-${safeName}`
         : `docs/${department}/${docId}${extOf(file.name) || '.bin'}`;
 
-      // Chunk + embed
-      const chunks = chunkText(extracted.text, 500, 50);
+      // STEP 4: chunk
+      const chunks = chunkText(safeText, 500, 50);
+      console.log('[upload] chunked', {
+        filename: file.name,
+        chunkCount: chunks.length,
+        avgChunkChars: chunks.length
+          ? Math.round(chunks.reduce((s, c) => s + c.length, 0) / chunks.length)
+          : 0
+      });
+
+      // STEP 5: embed (per-batch latency + token count is logged inside
+      // embedBatch via svcLog).
       const vectors = await embedBatch(chunks);
 
-      // Store the original blob with rich metadata so we can render
-      // attribution and re-validate ACL out-of-band if needed.
+      // STEP 6: upload original blob (latency logged by uploadBlob via svcLog).
+      console.log('[upload] uploading blob', {
+        filename: file.name,
+        blobName,
+        contentType: ct
+      });
       await uploadBlob({
         blobName,
         buffer,
@@ -199,12 +292,12 @@ export async function POST(req: NextRequest) {
           uploader_oid: user.oid,
           allowed_groups: requestedGroups.join(','),
           original_filename: encodeURIComponent(file.name),
-          title: encodeURIComponent(extracted.title.slice(0, 256)),
+          title: encodeURIComponent(safeTitle),
           department: encodeURIComponent(department)
         }
       });
 
-      // Push chunk docs into the batch — the same shape the indexer uses.
+      // STEP 7: stage chunk docs for the batched Search index push below.
       // allowedUsers always includes the uploader so they retain access
       // even if they later leave one of the chosen groups.
       chunks.forEach((c, i) => {
@@ -212,7 +305,7 @@ export async function POST(req: NextRequest) {
           id: `upload-${docId}-${i}`,
           content: c,
           contentVector: vectors[i],
-          title: extracted.title,
+          title: safeTitle,
           allowedGroups: requestedGroups,
           allowedUsers: [user.oid],
           department,
@@ -221,35 +314,75 @@ export async function POST(req: NextRequest) {
         });
       });
 
+      console.log('[upload] file OK', {
+        filename: file.name,
+        docId,
+        title: safeTitle,
+        chunks: chunks.length,
+        blobName
+      });
+
       results.push({
         filename: file.name,
         ok: true,
         doc: {
           id: `upload-${docId}-0`,
-          title: extracted.title,
+          title: safeTitle,
           chunks: chunks.length,
           blobName
         }
       });
     } catch (e) {
+      // FULL stack trace — message alone often hides where pdf-parse died.
+      console.error('[upload] FAIL — unhandled error', {
+        filename: file.name,
+        contentType: ct,
+        error: (e as Error).message,
+        stack: (e as Error).stack
+      });
       results.push({ filename: file.name, ok: false, error: (e as Error).message });
     }
   }
 
   // ---------- Push chunks to Azure AI Search in batches of 50 ----------
   if (indexBatch.length > 0) {
+    console.log('[upload] indexing', {
+      totalChunks: indexBatch.length,
+      batchSize: 50
+    });
     const client = getSearchClient();
     const BATCH = 50;
     for (let i = 0; i < indexBatch.length; i += BATCH) {
       // SDK type narrows to the indexed type; the runtime accepts plain objects.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const slice = indexBatch.slice(i, i + BATCH) as any;
+      const batchIdx = Math.floor(i / BATCH);
       try {
-        await client.uploadDocuments(slice);
+        const t0 = Date.now();
+        const result = await client.uploadDocuments(slice);
+        const fails = result.results.filter((r) => !r.succeeded);
+        console.log('[upload] index batch', {
+          batchIdx,
+          size: slice.length,
+          succeeded: result.results.length - fails.length,
+          failed: fails.length,
+          ms: Date.now() - t0
+        });
+        if (fails.length > 0) {
+          console.warn('[upload] index batch had per-doc failures', {
+            batchIdx,
+            failures: fails.map((f) => ({ key: f.key, errorMessage: f.errorMessage }))
+          });
+        }
       } catch (e) {
         // If indexing fails after blob is written, surface a partial-failure
         // error. Operator can re-run /api/upload — same blobName is idempotent
         // (Azure Blob upserts) and uploadDocuments upserts by id too.
+        console.error('[upload] index batch THREW — partial failure', {
+          batchIdx,
+          error: (e as Error).message,
+          stack: (e as Error).stack
+        });
         return new Response(
           `Some files were indexed; this batch failed: ${(e as Error).message}`,
           { status: 500 }

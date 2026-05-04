@@ -49,6 +49,11 @@ interface DocSummary {
   /** Group IDs the doc is shared with. Resolved to display names client-side
    * via /api/my-groups for the "Visible to" chips. */
   allowedGroups: string[];
+  /** Server-computed: true when the caller is allowed to DELETE this doc.
+   *  Drives whether the trash button is rendered on the row. The DELETE
+   *  endpoint re-validates server-side on every request — this flag is
+   *  purely for UI affordance. */
+  canDelete: boolean;
 }
 
 // Per-session conversation memory. Lives in sessionStorage (cleared when
@@ -715,6 +720,12 @@ function MyDocsModal({
   const [groupCount, setGroupCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // Inline delete-confirm state. Only one row can be in confirm at a time;
+  // clicking another row's × cancels the previous. deletingId is the row
+  // currently mid-DELETE (disables both buttons + shows "Deleting…").
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   // group ID → display name lookup. Populated once on open from /api/my-groups.
   // Used to render the "Visible to: HR · Public" line under each row. Group
   // IDs not in the map (e.g. an upload shared with a group the caller isn't
@@ -794,6 +805,36 @@ function MyDocsModal({
       byDept[k].push(d);
     }
   }
+
+  /** Two-step delete: first click on × moves the row into confirm state;
+   *  click on "Confirm delete" actually fires the DELETE. The server
+   *  re-checks authorisation — frontend canDelete is just for the
+   *  affordance. On success: optimistically remove from local state
+   *  (don't wait for refetch). On failure: keep the row, show inline
+   *  error above the list. */
+  const handleDelete = async (d: DocSummary) => {
+    if (deletingId) return;
+    setDeletingId(d.id);
+    setDeleteError(null);
+    try {
+      const token = await acquireToken();
+      const res = await fetch(`/api/my-docs?id=${encodeURIComponent(d.id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) {
+        setDeleteError(`Delete failed: ${res.status} ${(await res.text()).slice(0, 200)}`);
+        return;
+      }
+      // Optimistic remove — server confirms via 200, no need to refetch.
+      setDocs((prev) => (prev ? prev.filter((x) => x.id !== d.id) : null));
+      setConfirmingId(null);
+    } catch (e) {
+      setDeleteError((e as Error).message);
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   return (
     <div
@@ -875,6 +916,12 @@ function MyDocsModal({
             </div>
           )}
 
+          {deleteError && (
+            <div className="mb-3 rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800">
+              {deleteError}
+            </div>
+          )}
+
           {docs && docs.length > 0 && (
             <div className="space-y-4">
               {Object.entries(byDept).map(([dept, list]) => (
@@ -886,38 +933,106 @@ function MyDocsModal({
                     </span>
                   </div>
                   <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
-                    {list.map((d) => (
-                      <li key={d.id}>
-                        <button
-                          type="button"
-                          onClick={() => onSelectDoc(d.id)}
-                          className="block w-full px-4 py-3 text-left text-sm hover:bg-slate-50"
-                        >
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium text-slate-900">{d.title}</span>
-                            <ProvenanceBadge p={d.provenance} />
-                          </div>
-                          {d.allowedGroups.length > 0 && (
-                            <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-slate-500">
-                              <span className="text-slate-400">Visible to:</span>
-                              {d.allowedGroups.map((gid) => {
-                                const name = groupNames.get(gid);
-                                return (
-                                  <span
-                                    key={gid}
-                                    className="rounded bg-slate-100 px-1.5 py-0.5 font-medium text-slate-700"
-                                    title={gid}
-                                  >
-                                    {name || `${gid.slice(0, 8)}…`}
-                                  </span>
-                                );
-                              })}
+                    {list.map((d) => {
+                      const isConfirming = confirmingId === d.id;
+                      const isDeleting = deletingId === d.id;
+                      return (
+                        <li key={d.id} className="flex items-stretch hover:bg-slate-50">
+                          {/* Main click area — opens the source modal. Disabled
+                              while this row is being deleted so the modal
+                              doesn't pop over the in-flight delete UI. */}
+                          <button
+                            type="button"
+                            onClick={() => onSelectDoc(d.id)}
+                            disabled={isDeleting}
+                            className="flex-1 px-4 py-3 text-left text-sm disabled:opacity-50"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium text-slate-900">{d.title}</span>
+                              <ProvenanceBadge p={d.provenance} />
+                            </div>
+                            {d.allowedGroups.length > 0 && (
+                              <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-slate-500">
+                                <span className="text-slate-400">Visible to:</span>
+                                {d.allowedGroups.map((gid) => {
+                                  const name = groupNames.get(gid);
+                                  return (
+                                    <span
+                                      key={gid}
+                                      className="rounded bg-slate-100 px-1.5 py-0.5 font-medium text-slate-700"
+                                      title={gid}
+                                    >
+                                      {name || `${gid.slice(0, 8)}…`}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            <div className="mt-1 text-[10px] text-slate-400">id: {d.id}</div>
+                          </button>
+
+                          {/* Delete affordance — only when server marked the
+                              row deletable (own upload, or caller is in the
+                              uploaders/admin group). Two states:
+                                - idle: trash icon, red on hover (subdued
+                                  enough to not dominate the card, distinct
+                                  enough to clearly mean "delete")
+                                - confirming: [Cancel] [Confirm delete] */}
+                          {d.canDelete && !isConfirming && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setConfirmingId(d.id);
+                                setDeleteError(null);
+                              }}
+                              disabled={!!deletingId}
+                              className="group shrink-0 self-stretch border-l border-slate-100 px-3 text-red-500 hover:bg-red-50 hover:text-red-700 disabled:opacity-40"
+                              title="Delete this document"
+                              aria-label={`Delete ${d.title}`}
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                width="16"
+                                height="16"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                aria-hidden="true"
+                              >
+                                <path d="M3 6h18" />
+                                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                                <line x1="10" y1="11" x2="10" y2="17" />
+                                <line x1="14" y1="11" x2="14" y2="17" />
+                              </svg>
+                            </button>
+                          )}
+                          {isConfirming && (
+                            <div className="flex shrink-0 items-center gap-2 px-3 text-xs">
+                              <button
+                                type="button"
+                                onClick={() => setConfirmingId(null)}
+                                disabled={isDeleting}
+                                className="rounded px-2 py-1 text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDelete(d)}
+                                disabled={isDeleting}
+                                className="rounded bg-red-600 px-2 py-1 font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+                              >
+                                {isDeleting ? 'Deleting…' : 'Confirm delete'}
+                              </button>
                             </div>
                           )}
-                          <div className="mt-1 text-[10px] text-slate-400">id: {d.id}</div>
-                        </button>
-                      </li>
-                    ))}
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
               ))}

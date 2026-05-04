@@ -1,4 +1,5 @@
 import matter from 'gray-matter';
+import { humanizeFilename, normalisePdfText } from '@/lib/utils/chunker';
 
 export interface Extracted {
   text: string;
@@ -58,7 +59,7 @@ async function extractMarkdown(buffer: Buffer, filename: string): Promise<Extrac
   const fmTitle = (parsed.data?.title as string | undefined) || undefined;
   return {
     text: (parsed.content || raw).trim(),
-    title: fmTitle || stripExt(filename),
+    title: fmTitle || humanizeFilename(stripExt(filename)),
     detectedContentType: 'text/markdown'
   };
 }
@@ -66,7 +67,7 @@ async function extractMarkdown(buffer: Buffer, filename: string): Promise<Extrac
 async function extractText(buffer: Buffer, filename: string): Promise<Extracted> {
   return {
     text: decodeUtf8(buffer).trim(),
-    title: stripExt(filename),
+    title: humanizeFilename(stripExt(filename)),
     detectedContentType: 'text/plain'
   };
 }
@@ -75,7 +76,7 @@ async function extractHtml(buffer: Buffer, filename: string): Promise<Extracted>
   const html = decodeUtf8(buffer);
   // Pull <title> if present.
   const titleMatch = /<title[^>]*>([^<]+)<\/title>/i.exec(html);
-  const title = titleMatch?.[1]?.trim() || stripExt(filename);
+  const title = titleMatch?.[1]?.trim() || humanizeFilename(stripExt(filename));
 
   // Strip script/style + tags + collapse whitespace.
   const text = html
@@ -98,15 +99,39 @@ async function extractHtml(buffer: Buffer, filename: string): Promise<Extracted>
 }
 
 async function extractPdf(buffer: Buffer, filename: string): Promise<Extracted> {
-  // Dynamic import — pdf-parse loads fixtures at module-init that fail under
-  // some bundlers. Lazy-loading avoids that pitfall.
-  const mod = (await import('pdf-parse')) as { default: (data: Buffer) => Promise<{ text: string; info?: Record<string, unknown> }> };
-  const pdfParse = mod.default;
-  const result = await pdfParse(buffer);
-  const fmTitle = result.info?.Title;
-  const title = (typeof fmTitle === 'string' && fmTitle.trim()) || stripExt(filename);
+  // Use `unpdf` (modern pdf.js wrapper, zero native deps, works in
+  // Next.js / serverless / Edge). Replaces `pdf-parse`, which wraps an
+  // ancient pdf.js v1.10.100 that throws "bad XRef entry" on PDFs
+  // produced by current Word / Google Docs / Acrobat — anything using
+  // newer cross-reference table formats (most modern PDFs).
+  //
+  // Dynamic import keeps unpdf out of the cold-start path for routes
+  // that never see a PDF.
+  const { getDocumentProxy, extractText } = await import('unpdf');
+  const pdf = await getDocumentProxy(new Uint8Array(buffer));
+  const { text } = await extractText(pdf, { mergePages: true });
+
+  // unpdf doesn't surface document Info metadata in its high-level
+  // extractText output. Try to read it via getMetadata for a friendlier
+  // title; fall back to humanised filename if not present (the common
+  // case — most PDFs don't set Info.Title).
+  let title = humanizeFilename(stripExt(filename));
+  try {
+    const meta = await pdf.getMetadata();
+    const infoTitle = (meta?.info as Record<string, unknown> | undefined)?.Title;
+    if (typeof infoTitle === 'string' && infoTitle.trim()) {
+      title = infoTitle.trim();
+    }
+  } catch {
+    // metadata read is best-effort; humanised filename is a fine fallback
+  }
+
+  // Light cleanup — PDF text extraction emits raw glyph runs with no
+  // whitespace normalisation. See normalisePdfText for what's stripped.
+  const cleaned = normalisePdfText(typeof text === 'string' ? text : '');
+
   return {
-    text: (result.text || '').trim(),
+    text: cleaned,
     title,
     detectedContentType: 'application/pdf'
   };
@@ -117,7 +142,7 @@ async function extractDocx(buffer: Buffer, filename: string): Promise<Extracted>
   const result = await mod.extractRawText({ buffer });
   return {
     text: (result.value || '').trim(),
-    title: stripExt(filename),
+    title: humanizeFilename(stripExt(filename)),
     detectedContentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
   };
 }

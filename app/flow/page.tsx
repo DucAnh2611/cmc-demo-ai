@@ -77,6 +77,7 @@ export default function FlowPage() {
             how documents get into the system (seed + upload), and how Azure resources fit together.
           </p>
           <nav className="mt-4 flex flex-wrap gap-2 text-xs">
+            <a href="#section-setup" className="rounded-full border border-slate-300 px-3 py-1 text-slate-700 hover:bg-white">Setup</a>
             <a href="#section-accounts" className="rounded-full border border-slate-300 px-3 py-1 text-slate-700 hover:bg-white">Demo accounts</a>
             <a href="#section-flows" className="rounded-full border border-slate-300 px-3 py-1 text-slate-700 hover:bg-white">1 · Flows</a>
             <a href="#section-tech" className="rounded-full border border-slate-300 px-3 py-1 text-slate-700 hover:bg-white">2 · Tech</a>
@@ -84,6 +85,239 @@ export default function FlowPage() {
             <a href="#section-azure" className="rounded-full border border-slate-300 px-3 py-1 text-slate-700 hover:bg-white">4 · Azure</a>
           </nav>
         </header>
+
+        {/* ==================================================================
+            SETUP — how to provision identity in Entra ID. Visible without
+            login so a fresh operator can recreate the demo from a blank
+            tenant: add users, then create groups, then assign membership.
+            Each subsection links straight to the relevant Azure portal
+            blade so the operator doesn't have to navigate the menu tree.
+            ================================================================== */}
+        <section id="section-setup" className="mt-10 scroll-mt-6">
+          <h2 className="text-xl font-semibold text-slate-900">Setup — provision identity in Entra ID</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Recreating the demo in a clean tenant takes two short tasks: add users, then
+            create the four security groups that drive the ACL. Both happen in the Azure portal
+            (or via <code>az ad</code> CLI). The Demo accounts table below shows what you should
+            end up with.
+          </p>
+
+          {/* Audience legend — separates "anyone with tenant admin can do
+              this in the portal" from "only matters if you're running the
+              demo codebase". Each step block uses these badges. */}
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
+            <span className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-white px-2 py-0.5 font-medium text-slate-700">
+              <span className="h-1.5 w-1.5 rounded-full bg-slate-700" /> Admin (portal)
+            </span>
+            <span className="text-slate-400">— a tenant admin (or User/Group Administrator role) can do this without touching code.</span>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px]">
+            <span className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 font-medium text-amber-800">
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-600" /> DEV ONLY
+            </span>
+            <span className="text-slate-400">— extra wiring needed only when running this demo codebase. Skip if you&rsquo;re just managing identity in the tenant.</span>
+          </div>
+
+          {/* ----- Create a group ----- */}
+          {/* Groups come first: when adding users in Step B, the
+              Assignments tab lets you drop them straight into already-
+              existing groups, so the order saves a round-trip. */}
+          <div className="mt-6 rounded-lg border border-slate-200 bg-white p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-semibold text-slate-900">Step A · Create a group</h3>
+                  <span className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-slate-50 px-2 py-0.5 text-[10px] font-medium text-slate-700">
+                    <span className="h-1.5 w-1.5 rounded-full bg-slate-700" /> Admin (portal)
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-slate-600">
+                  Create one group per ACL slice the demo needs:{' '}
+                  <code>group-hr-readers</code>, <code>group-finance-readers</code>,{' '}
+                  <code>group-public-readers</code>, and (optionally){' '}
+                  <code>group-uploaders</code> for the upload-permission gate.
+                </p>
+              </div>
+              <a
+                href="https://portal.azure.com/#view/Microsoft_AAD_IAM/GroupsManagementMenuBlade/~/Overview"
+                target="_blank"
+                rel="noreferrer"
+                className="shrink-0 rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+              >
+                Open Groups blade ↗
+              </a>
+            </div>
+            <ol className="mt-4 list-decimal space-y-2 pl-5 text-sm text-slate-700">
+              <li>
+                Open the <strong>All groups</strong> blade (button above) → click{' '}
+                <strong>+ New group</strong>.
+              </li>
+              <li>
+                On the <strong>Group</strong> form, fill in:
+                <ul className="mt-1 list-disc space-y-0.5 pl-5 text-slate-600">
+                  <li>
+                    <strong>Group type</strong>: <code>Security</code> (NOT Microsoft 365 — only
+                    Security groups appear in the user&rsquo;s{' '}
+                    <code>transitiveMemberOf</code> token claim used for ACL).
+                  </li>
+                  <li>
+                    <strong>Group name</strong>: use a clear, prefixed name like{' '}
+                    <code>group-hr-readers</code>.
+                  </li>
+                  <li>
+                    <strong>Group description</strong> (optional): explain what content this group
+                    grants access to.
+                  </li>
+                  <li>
+                    <strong>Membership type</strong>: <code>Assigned</code> (manual membership;
+                    Dynamic membership requires Entra Premium P1).
+                  </li>
+                </ul>
+              </li>
+              <li>
+                <strong>No members selected</strong> — leave it empty for now; we&rsquo;ll add
+                members from the user side in Step B (or come back to the group&rsquo;s
+                <em> Members</em> blade later).
+              </li>
+              <li>
+                Click <strong>Create</strong>. The group appears in the list within a few
+                seconds.
+              </li>
+              <li>
+                Open the new group → <strong>Overview</strong> → copy the{' '}
+                <strong>Object ID</strong> (a GUID like{' '}
+                <code>68ff93bb-8e32-4b97-adac-2a07564f1406</code>). You&rsquo;ll need this for
+                the dev wiring below — and for any code that filters by this group.
+              </li>
+            </ol>
+            <p className="mt-3 text-[11px] text-slate-500">
+              <strong>For a normal admin, that&rsquo;s it</strong> — the group exists, members
+              you add (via Step B or the group&rsquo;s Members blade) can sign in to apps that
+              ACL on it. Effective access in the demo chat updates within ~5 minutes of group
+              changes (token re-issue + Graph cache TTL).
+            </p>
+
+            {/* DEV-ONLY follow-up — clearly visually separate from the
+                portal steps above. Only matters when running THIS codebase. */}
+            <div className="mt-4 rounded-md border border-amber-300 bg-amber-50 p-4">
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1 rounded-full border border-amber-400 bg-white px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-800">
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-600" /> Dev only
+                </span>
+                <span className="text-[11px] font-medium text-amber-900">
+                  wire the new group into this codebase
+                </span>
+              </div>
+              <p className="mt-2 text-xs text-amber-900">
+                Skip everything below if you&rsquo;re only managing identity in the tenant —
+                these steps are needed only when running the demo&rsquo;s Next.js app. They
+                map the new group&rsquo;s GUID to a named env var the seed indexer reads.
+              </p>
+              <ol start={6} className="mt-3 list-decimal space-y-2 pl-5 text-sm text-amber-900">
+                <li>
+                  Paste the Object ID into <code>.env.local</code> against the matching key:
+                  <ul className="mt-1 list-disc space-y-0.5 pl-5 text-amber-800">
+                    <li><code>GROUP_HR_ID</code> — for the HR readers group</li>
+                    <li><code>GROUP_FINANCE_ID</code> — for the Finance readers group</li>
+                    <li><code>GROUP_PUBLIC_ID</code> — for the Public readers group</li>
+                    <li><code>GROUP_UPLOADERS_ID</code> — (optional) for the upload-permission gate</li>
+                  </ul>
+                </li>
+                <li>
+                  Restart the dev server <em>or</em> run <code>npm run index-docs</code> so the
+                  indexer resolves the placeholder IDs in the seed docs to your real group GUIDs.
+                </li>
+              </ol>
+            </div>
+          </div>
+
+          {/* ----- Add a user ----- */}
+          <div className="mt-6 rounded-lg border border-slate-200 bg-white p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-semibold text-slate-900">Step B · Add a user</h3>
+                  <span className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-slate-50 px-2 py-0.5 text-[10px] font-medium text-slate-700">
+                    <span className="h-1.5 w-1.5 rounded-full bg-slate-700" /> Admin (portal)
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-slate-600">
+                  Repeat for each demo identity (e.g. <code>alice</code>, <code>bob</code>,{' '}
+                  <code>upload</code>). Sign in to Azure with an account that has the{' '}
+                  <em>User Administrator</em> or <em>Global Administrator</em> role on the tenant.
+                </p>
+              </div>
+              <a
+                href="https://portal.azure.com/#view/Microsoft_AAD_UsersAndTenants/UserManagementMenuBlade/~/AllUsers"
+                target="_blank"
+                rel="noreferrer"
+                className="shrink-0 rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+              >
+                Open Users blade ↗
+              </a>
+            </div>
+            <ol className="mt-4 list-decimal space-y-2 pl-5 text-sm text-slate-700">
+              <li>
+                Open the <strong>All users</strong> blade (button above) → click{' '}
+                <strong>+ New user</strong> → <strong>Create new user</strong>.
+              </li>
+              <li>
+                On the <strong>Basics</strong> tab, fill in:
+                <ul className="mt-1 list-disc space-y-0.5 pl-5 text-slate-600">
+                  <li>
+                    <strong>User principal name</strong> — the part before <code>@</code> (e.g.{' '}
+                    <code>alice</code>). The full UPN becomes{' '}
+                    <code>alice@&lt;your-tenant&gt;.onmicrosoft.com</code>.
+                  </li>
+                  <li>
+                    <strong>Display name</strong> — what the chat UI shows (e.g. <code>Alice</code>).
+                  </li>
+                  <li>
+                    <strong>Password</strong> — pick &ldquo;Auto-generate&rdquo; for production;
+                    for the demo, &ldquo;Let me create the password&rdquo; with a strong shared
+                    value is fine.
+                  </li>
+                  <li>
+                    Leave <strong>Account enabled</strong> ticked.
+                  </li>
+                </ul>
+              </li>
+              <li>
+                On the <strong>Properties</strong> tab (optional) — set a job title / department
+                if you want the chat header to show something other than the UPN.
+              </li>
+              <li>
+                On the <strong>Assignments</strong> tab — click{' '}
+                <strong>+ Add group</strong> and pick the groups you created in Step A. This is
+                the simplest way to wire ACL: pick HR + Public for an Alice-style user, Finance
+                + Public for a Bob-style user, all three for an admin / uploader.
+              </li>
+              <li>
+                Click <strong>Review + create</strong> → <strong>Create</strong>. The user
+                appears in the list within a few seconds.
+              </li>
+              <li>
+                <strong>First-login note for the user:</strong> they must sign in once to the
+                Microsoft account portal (<code>myaccount.microsoft.com</code>) to set their
+                permanent password before the demo app will accept their login.
+              </li>
+            </ol>
+            <p className="mt-3 text-[11px] text-slate-500">
+              Nothing dev-side to do for users — the demo code reads identity from the bearer
+              token at request time. New users work as soon as they exist in the tenant and
+              have been added to one of the groups from Step A.
+            </p>
+          </div>
+
+          {/* ----- Verification tip ----- */}
+          <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">
+            <strong>Verify both steps in one command:</strong>{' '}
+            <code>npm run verify:services</code> reads the GROUP_*_ID values from{' '}
+            <code>.env.local</code> and prints them so you can confirm each group is
+            wired correctly. Sign in as one of your new users in <code>/login</code> — the
+            chat header shows their display name.
+          </div>
+        </section>
 
         {/* ==================================================================
             DEMO ACCOUNTS — visible without login so stakeholders can pick a

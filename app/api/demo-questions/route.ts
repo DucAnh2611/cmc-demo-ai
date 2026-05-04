@@ -4,6 +4,7 @@ import { verifyAccessToken } from '@/lib/auth/verifyToken';
 import { getUserGroups } from '@/lib/auth/getUserGroups';
 import { buildGroupFilter, getSearchClient } from '@/lib/search/secureSearch';
 import { getAnthropicClient, CLAUDE_MODEL, isAnthropicConfigured } from '@/lib/claude/client';
+import { svcLog } from '@/lib/devLog';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -175,6 +176,7 @@ export async function GET(req: NextRequest) {
   let questions: string[] = [];
   try {
     const anthropic = getAnthropicClient();
+    const t0 = Date.now();
     const resp = await anthropic.messages.create({
       model: QUESTION_MODEL,
       // 5 short questions ≈ 5 × 25 tokens = ~125 output tokens. 256 is a
@@ -190,6 +192,12 @@ export async function GET(req: NextRequest) {
       messages: [{ role: 'user', content: userMsg }]
     });
 
+    svcLog({
+      service: 'claude',
+      op: 'demo-questions',
+      details: `${QUESTION_MODEL} · ${resp.usage?.input_tokens ?? '?'} in / ${resp.usage?.output_tokens ?? '?'} out`,
+      ms: Date.now() - t0
+    });
     const text = resp.content
       .map((b) => (b.type === 'text' ? b.text : ''))
       .join('')

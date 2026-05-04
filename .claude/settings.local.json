@@ -5,7 +5,9 @@
       "PowerShell(Get-ChildItem -Path \"D:\\\\Coding\\\\Company\\\\CMC_Global\\\\claude-secure-rag-demo\" -Force | Where-Object { $_.Name -ne 'node_modules' } | Select-Object Mode, Name | Format-Table -AutoSize)",
       "Bash(npm run *)",
       "Bash(npm test *)",
-      "Bash(node *)"
+      "Bash(node *)",
+      "Bash(npm install *)",
+      "Bash(npm uninstall *)"
     ]
   }
 }

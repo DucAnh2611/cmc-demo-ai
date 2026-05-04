@@ -1,4 +1,5 @@
 import { getAnthropicClient, isAnthropicConfigured, CLAUDE_MODEL } from './client';
+import { svcLog } from '@/lib/devLog';
 
 /**
  * Model used for query rewriting. Defaults to the SAME model as the answer
@@ -52,6 +53,7 @@ export async function expandQuery(question: string): Promise<string[]> {
 
   try {
     const client = getAnthropicClient();
+    const t0 = Date.now();
     const resp = await client.messages.create({
       model: EXPANSION_MODEL,
       // 256 is plenty for a JSON array of ≤2 short paraphrases. Keeping it
@@ -71,11 +73,11 @@ export async function expandQuery(question: string): Promise<string[]> {
 
     const variants = parseVariants(text);
     const all = dedupe([original, ...variants]).slice(0, MAX_VARIANTS + 1);
-    console.log('[expandQuery] variants generated', {
-      model: EXPANSION_MODEL,
-      original,
-      variants: all.slice(1),
-      rawCount: variants.length
+    svcLog({
+      service: 'claude',
+      op: 'expand',
+      details: `${EXPANSION_MODEL} · ${variants.length} variants · ${resp.usage?.input_tokens || '?'} in / ${resp.usage?.output_tokens || '?'} out`,
+      ms: Date.now() - t0
     });
     return all;
   } catch (e) {

@@ -1,5 +1,6 @@
 import type { TelemetryClient } from 'applicationinsights';
 import { KnownSeverityLevel } from 'applicationinsights';
+import { svcLog } from '@/lib/devLog';
 
 export interface AuditEvent {
   userId: string;
@@ -76,12 +77,24 @@ export async function auditLog(event: AuditEvent, severity: KnownSeverityLevel =
   console.log('[audit]', JSON.stringify({ timestamp: event.timestamp, ...properties }));
 
   const client = await getClient();
-  if (!client) return;
+  if (!client) {
+    svcLog({
+      service: 'ai',
+      op: 'trackTrace',
+      details: `${AUDIT_EVENT} · stdout-only (no connection string)`
+    });
+    return;
+  }
 
   client.trackTrace({
     message: `RAG query by ${event.upn ?? event.userId}`,
     severity,
     properties,
     time: new Date(event.timestamp)
+  });
+  svcLog({
+    service: 'ai',
+    op: 'trackTrace',
+    details: `${AUDIT_EVENT} · ${event.retrievedDocIds.length} doc(s)`
   });
 }
