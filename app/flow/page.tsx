@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import CopyButton from './CopyButton';
+import StepImage from './StepImage';
 
 export const metadata = {
   title: 'Security & Document Flow · Secure RAG Demo'
@@ -151,6 +152,7 @@ export default function FlowPage() {
               <li>
                 Open the <strong>All groups</strong> blade (button above) → click{' '}
                 <strong>+ New group</strong>.
+                <StepImage type="group" step={1} />
               </li>
               <li>
                 On the <strong>Group</strong> form, fill in:
@@ -173,6 +175,7 @@ export default function FlowPage() {
                     Dynamic membership requires Entra Premium P1).
                   </li>
                 </ul>
+                <StepImage type="group" step={2} />
               </li>
               <li>
                 <strong>No members selected</strong> — leave it empty for now; we&rsquo;ll add
@@ -260,6 +263,7 @@ export default function FlowPage() {
               <li>
                 Open the <strong>All users</strong> blade (button above) → click{' '}
                 <strong>+ New user</strong> → <strong>Create new user</strong>.
+                <StepImage type="user" step={1} />
               </li>
               <li>
                 On the <strong>Basics</strong> tab, fill in:
@@ -281,25 +285,30 @@ export default function FlowPage() {
                     Leave <strong>Account enabled</strong> ticked.
                   </li>
                 </ul>
+                <StepImage type="user" step={2} />
               </li>
               <li>
                 On the <strong>Properties</strong> tab (optional) — set a job title / department
                 if you want the chat header to show something other than the UPN.
+                <StepImage type="user" step={3} />
               </li>
               <li>
                 On the <strong>Assignments</strong> tab — click{' '}
                 <strong>+ Add group</strong> and pick the groups you created in Step A. This is
                 the simplest way to wire ACL: pick HR + Public for an Alice-style user, Finance
                 + Public for a Bob-style user, all three for an admin / uploader.
+                <StepImage type="user" step={4} />
               </li>
               <li>
                 Click <strong>Review + create</strong> → <strong>Create</strong>. The user
                 appears in the list within a few seconds.
+                <StepImage type="user" step={5} />
               </li>
               <li>
                 <strong>First-login note for the user:</strong> they must sign in once to the
                 Microsoft account portal (<code>myaccount.microsoft.com</code>) to set their
                 permanent password before the demo app will accept their login.
+                <StepImage type="user" step={6} />
               </li>
             </ol>
             <p className="mt-3 text-[11px] text-slate-500">
