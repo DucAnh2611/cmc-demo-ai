@@ -74,34 +74,247 @@ export default function FlowPage() {
         <header className="mt-6">
           <h1 className="text-3xl font-semibold text-slate-900">Security &amp; document flow</h1>
           <p className="mt-2 text-sm text-slate-600">
-            Four sections: how a request travels through the system, what each piece of tech does,
-            how documents get into the system (seed + upload), and how Azure resources fit together.
+            Six sections: how a request travels through the system, what each piece of tech does,
+            how to provision identity in Entra ID, how documents get into the system (seed + upload),
+            how to manage users in-app, and how Azure resources fit together.
           </p>
-          <nav className="mt-4 flex flex-wrap gap-2 text-xs">
-            <a href="#section-setup" className="rounded-full border border-slate-300 px-3 py-1 text-slate-700 hover:bg-white">Setup</a>
-            <a href="#section-accounts" className="rounded-full border border-slate-300 px-3 py-1 text-slate-700 hover:bg-white">Demo accounts</a>
-            <a href="#section-flows" className="rounded-full border border-slate-300 px-3 py-1 text-slate-700 hover:bg-white">1 · Flows</a>
-            <a href="#section-tech" className="rounded-full border border-slate-300 px-3 py-1 text-slate-700 hover:bg-white">2 · Tech</a>
-            <a href="#section-upload" className="rounded-full border border-slate-300 px-3 py-1 text-slate-700 hover:bg-white">3 · Upload</a>
-            <a href="#section-admin" className="rounded-full border border-slate-300 px-3 py-1 text-slate-700 hover:bg-white">4 · Admin</a>
-            <a href="#section-azure" className="rounded-full border border-slate-300 px-3 py-1 text-slate-700 hover:bg-white">5 · Azure</a>
-          </nav>
         </header>
 
+        {/* Section outline — sticky so it stays visible as the reader
+            scrolls. Negative horizontal margin pulls it past the
+            container's padding so the bottom border spans full width.
+            Backdrop blur + slate-50/90 keeps page content readable when
+            it scrolls under the nav. scroll-mt-20 on each section
+            target leaves room for the nav's height when an anchor
+            jumps. */}
+        <nav className="sticky top-0 z-30 -mx-6 mt-4 flex flex-wrap gap-2 border-b border-slate-200 bg-slate-50/90 px-6 py-3 text-xs backdrop-blur supports-[backdrop-filter]:bg-slate-50/80">
+          <a href="#section-flows" className="rounded-full border border-slate-300 bg-white px-3 py-1 text-slate-700 hover:bg-slate-100">1 · Flows</a>
+          <a href="#section-tech" className="rounded-full border border-slate-300 bg-white px-3 py-1 text-slate-700 hover:bg-slate-100">2 · Tech</a>
+          <a href="#section-setup" className="rounded-full border border-slate-300 bg-white px-3 py-1 text-slate-700 hover:bg-slate-100">3 · Setup</a>
+          <a href="#section-upload" className="rounded-full border border-slate-300 bg-white px-3 py-1 text-slate-700 hover:bg-slate-100">4 · Upload</a>
+          <a href="#section-admin" className="rounded-full border border-slate-300 bg-white px-3 py-1 text-slate-700 hover:bg-slate-100">5 · Admin</a>
+          <a href="#section-azure" className="rounded-full border border-slate-300 bg-white px-3 py-1 text-slate-700 hover:bg-slate-100">6 · Azure</a>
+        </nav>
+
         {/* ==================================================================
-            SETUP — how to provision identity in Entra ID. Visible without
-            login so a fresh operator can recreate the demo from a blank
-            tenant: add users, then create groups, then assign membership.
-            Each subsection links straight to the relevant Azure portal
-            blade so the operator doesn't have to navigate the menu tree.
+            SECTION 1 — FLOWS
             ================================================================== */}
-        <section id="section-setup" className="mt-10 scroll-mt-6">
-          <h2 className="text-xl font-semibold text-slate-900">Setup — provision identity in Entra ID</h2>
+        <section id="section-flows" className="mt-12 scroll-mt-20">
+          <h2 className="text-xl font-semibold text-slate-900">1 · Flows — how we work</h2>
+
+          <h3 className="mt-6 text-sm font-semibold uppercase tracking-wide text-slate-500">
+            Chat request — what happens when a user asks a question
+          </h3>
+          <div className="mt-3 rounded-lg border border-slate-200 bg-white p-4">
+            <pre className="overflow-x-auto text-[11px] leading-snug text-slate-700">
+{`   BROWSER                    NEXT.JS API                EXTERNAL SERVICES
+   ┌──────────┐                ┌──────────────────┐
+   │ Sign in  │ ─────token───▶ │ verifyToken      │
+   └──────────┘                │   (claims-only)  │
+        │                      └────────┬─────────┘
+        │ ask question                  │
+        ▼                               ▼
+   ┌──────────┐  POST /api/chat ┌──────────────────┐         ┌──────────────────┐
+   │ Bearer + │ ───────────────▶│ getUserGroups    │ ──────▶ │ Microsoft Graph  │
+   │ message  │                 │ (5-min cache)    │ ◀────── │ transitiveMember │
+   └──────────┘                 └────────┬─────────┘         └──────────────────┘
+                                         ▼
+                                ┌──────────────────┐         ┌──────────────────┐
+                                │ embed(question)  │ ──────▶ │ Azure OpenAI     │
+                                │                  │ ◀────── │ embeddings       │
+                                └────────┬─────────┘         └──────────────────┘
+                                         ▼
+                                ┌──────────────────┐         ┌──────────────────┐
+                                │ secureSearch     │ ──────▶ │ Azure AI Search  │
+                                │ vector + ACL     │ ◀────── │ (ACL filter)     │
+                                └────────┬─────────┘         └──────────────────┘
+                                         ▼
+                                ┌──────────────────┐
+                                │ final-mile ACL   │   chunks dropped if any
+                                │   re-check       │   slipped past the filter
+                                └────────┬─────────┘
+                                         ▼
+                                ┌──────────────────┐         ┌──────────────────┐
+                                │ build prompt +   │ ──────▶ │ Anthropic API    │
+                                │ stream to Claude │ ◀────── │ (haiku-4-5)      │
+                                └────────┬─────────┘         └──────────────────┘
+                                         ▼
+                                ┌──────────────────┐         ┌──────────────────┐
+                                │ audit log        │ ──────▶ │ Application      │
+                                │                  │         │ Insights traces  │
+                                └────────┬─────────┘         └──────────────────┘
+                                         │
+   ┌──────────┐  SSE tokens              │
+   │ render   │ ◀────────────────────────┘
+   └──────────┘`}
+            </pre>
+          </div>
+
+          <ol className="relative mt-4 space-y-3 border-l border-slate-200 pl-6">
+            {REQUEST_FLOW.map((s) => (
+              <li key={s.n} className="relative">
+                <span className="absolute -left-[2.0625rem] flex h-6 w-6 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white">
+                  {s.n}
+                </span>
+                <div className="text-sm text-slate-700">{s.text}</div>
+              </li>
+            ))}
+          </ol>
+
+          <h3 className="mt-10 text-sm font-semibold uppercase tracking-wide text-slate-500">
+            Indexing flow — how documents get into the system
+          </h3>
+          <div className="mt-3 rounded-lg border border-slate-200 bg-white p-4">
+            <pre className="overflow-x-auto text-[11px] leading-snug text-slate-700">
+{`SEED (developer source)               UPLOAD (user-published)
+sample-docs/<dept>/*.md                /api/upload (PDF / DOCX / MD / TXT / HTML)
+        │                                       │
+        │ npm run index-docs                    │ extract text per file type
+        │                                       │ (mammoth / pdf-parse / passthrough)
+        ▼                                       ▼
+        ┌──────────────────────────────────────────────┐
+        │  Chunk to ~500 tokens                        │
+        │  Embed each chunk via Azure OpenAI           │
+        └─────────────────────┬────────────────────────┘
+                              │
+            ┌─────────────────┼─────────────────┐
+            ▼                                   ▼
+   ┌──────────────────┐                ┌──────────────────┐
+   │ Azure AI Search  │                │ Azure Blob       │
+   │ secure-docs-     │                │ uploads/docs/    │
+   │   index          │                │   <dept>/<name>  │
+   │                  │                │                  │
+   │ chunk fields:    │                │ originals stored │
+   │  id, content,    │                │ for download     │
+   │  contentVector,  │                │                  │
+   │  allowedGroups,  │                │ chunk.blobName ──┘ (pointer
+   │  allowedUsers,   │                                       back)
+   │  blobName,       │
+   │  uploader_oid    │
+   └──────────────────┘`}
+            </pre>
+          </div>
+
+          <ol className="relative mt-4 space-y-3 border-l border-slate-200 pl-6">
+            {INDEX_FLOW.map((s) => (
+              <li key={s.n} className="relative">
+                <span className="absolute -left-[2.0625rem] flex h-6 w-6 items-center justify-center rounded-full bg-purple-600 text-xs font-semibold text-white">
+                  {s.n}
+                </span>
+                <div className="text-sm text-slate-700">{s.text}</div>
+              </li>
+            ))}
+          </ol>
+        </section>
+
+        {/* ==================================================================
+            SECTION 2 — TECH
+            ================================================================== */}
+        <section id="section-tech" className="mt-14 scroll-mt-20">
+          <h2 className="text-xl font-semibold text-slate-900">2 · Tech — how this works</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Six logical layers. The ACL gate sits at layer 4 (Azure AI Search), with a redundant
+            check in layer 3 (orchestration). Layer 5 is conceptual — it&rsquo;s the contract that
+            Claude (layer 6) only ever sees the authorized output of layer 4.
+          </p>
+          <ol className="mt-4 space-y-2">
+            {LAYERS.map((L) => (
+              <li key={L.num} className={`rounded-lg border p-4 ${TONE_CLASSES[L.tone]}`}>
+                <div className="flex items-start gap-3">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-sm font-semibold text-slate-900 ring-1 ring-slate-300">
+                    {L.num}
+                  </span>
+                  <div className="min-w-0">
+                    <div className="font-semibold text-slate-900">{L.title}</div>
+                    <div className="mt-1 text-sm text-slate-700">{L.role}</div>
+                    <div className="mt-1 text-xs uppercase tracking-wide text-slate-500">{L.tech}</div>
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ol>
+
+          <h3 className="mt-8 text-sm font-semibold uppercase tracking-wide text-slate-500">
+            Tech stack at a glance
+          </h3>
+          <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200 bg-white">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-4 py-2">Layer</th>
+                  <th className="px-4 py-2">Tech / library</th>
+                  <th className="px-4 py-2">Where in code</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                <tr>
+                  <td className="px-4 py-2 align-top">Frontend</td>
+                  <td className="px-4 py-2 align-top">Next.js 14, React, Tailwind, MSAL React</td>
+                  <td className="px-4 py-2 align-top font-mono text-xs">app/page.tsx, app/login/page.tsx</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-2 align-top">Auth (browser)</td>
+                  <td className="px-4 py-2 align-top">@azure/msal-browser</td>
+                  <td className="px-4 py-2 align-top font-mono text-xs">app/providers/MsalProvider.tsx</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-2 align-top">Auth (server)</td>
+                  <td className="px-4 py-2 align-top">jsonwebtoken (claims-only validation)</td>
+                  <td className="px-4 py-2 align-top font-mono text-xs">lib/auth/verifyToken.ts</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-2 align-top">Groups</td>
+                  <td className="px-4 py-2 align-top">Microsoft Graph (transitiveMemberOf)</td>
+                  <td className="px-4 py-2 align-top font-mono text-xs">lib/auth/getUserGroups.ts</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-2 align-top">Embeddings</td>
+                  <td className="px-4 py-2 align-top">Azure OpenAI text-embedding-3-small</td>
+                  <td className="px-4 py-2 align-top font-mono text-xs">lib/search/embedder.ts</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-2 align-top">Search</td>
+                  <td className="px-4 py-2 align-top">@azure/search-documents (vector + filter)</td>
+                  <td className="px-4 py-2 align-top font-mono text-xs">lib/search/secureSearch.ts</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-2 align-top">LLM</td>
+                  <td className="px-4 py-2 align-top">@anthropic-ai/sdk (Claude haiku-4-5)</td>
+                  <td className="px-4 py-2 align-top font-mono text-xs">lib/claude/client.ts</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-2 align-top">Storage</td>
+                  <td className="px-4 py-2 align-top">@azure/storage-blob</td>
+                  <td className="px-4 py-2 align-top font-mono text-xs">lib/storage/blobClient.ts</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-2 align-top">File extraction</td>
+                  <td className="px-4 py-2 align-top">mammoth (DOCX), pdf-parse (PDF), gray-matter (MD)</td>
+                  <td className="px-4 py-2 align-top font-mono text-xs">lib/extractors/index.ts</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-2 align-top">Audit</td>
+                  <td className="px-4 py-2 align-top">applicationinsights (App Insights traces)</td>
+                  <td className="px-4 py-2 align-top font-mono text-xs">lib/audit/logger.ts</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        {/* ==================================================================
+            SECTION 3 — SETUP — how to provision identity in Entra ID.
+            Comes after Tech because it's a "stand up your own copy" task,
+            not part of the runtime story. Each subsection links straight
+            to the relevant Azure portal blade so the operator doesn't
+            have to navigate the menu tree.
+            ================================================================== */}
+        <section id="section-setup" className="mt-14 scroll-mt-20">
+          <h2 className="text-xl font-semibold text-slate-900">3 · Setup — provision identity in Entra ID</h2>
           <p className="mt-1 text-sm text-slate-600">
             Recreating the demo in a clean tenant takes two short tasks: add users, then
             create the four security groups that drive the ACL. Both happen in the Azure portal
-            (or via <code>az ad</code> CLI). The Demo accounts table below shows what you should
-            end up with.
+            (or via <code>az ad</code> CLI).
           </p>
 
           {/* Audience legend — separates "anyone with tenant admin can do
@@ -330,297 +543,10 @@ export default function FlowPage() {
         </section>
 
         {/* ==================================================================
-            DEMO ACCOUNTS — visible without login so stakeholders can pick a
-            user before they sign in to the chat UI
+            SECTION 4 — UPLOAD
             ================================================================== */}
-        <section id="section-accounts" className="mt-10 scroll-mt-6">
-          <h2 className="text-xl font-semibold text-slate-900">Demo accounts</h2>
-          <p className="mt-1 text-sm text-slate-600">
-            Sign in to the chat at <Link href="/login" className="underline hover:text-slate-900"><code>/login</code></Link>{' '}
-            with any of these. Same password for all four.
-          </p>
-          <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200 bg-white">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                <tr>
-                  <th className="px-4 py-2">Account</th>
-                  <th className="px-4 py-2">Sees in chat</th>
-                  <th className="px-4 py-2">Can upload?</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                <tr>
-                  <td className="px-4 py-3 align-top">
-                    <div className="flex items-center">
-                      <code>alice@evilcatkimigmail.onmicrosoft.com</code>
-                      <CopyButton value="alice@evilcatkimigmail.onmicrosoft.com" label="alice email" />
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 align-top text-slate-700">HR docs + Public docs</td>
-                  <td className="px-4 py-3 align-top text-slate-700">No</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-3 align-top">
-                    <div className="flex items-center">
-                      <code>bob@evilcatkimigmail.onmicrosoft.com</code>
-                      <CopyButton value="bob@evilcatkimigmail.onmicrosoft.com" label="bob email" />
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 align-top text-slate-700">Finance docs + Public docs</td>
-                  <td className="px-4 py-3 align-top text-slate-700">No</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-3 align-top">
-                    <div className="flex items-center">
-                      <code>upload@evilcatkimigmail.onmicrosoft.com</code>
-                      <CopyButton value="upload@evilcatkimigmail.onmicrosoft.com" label="upload email" />
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 align-top text-slate-700">All three (HR + Finance + Public)</td>
-                  <td className="px-4 py-3 align-top text-slate-700">Yes — to any group they belong to</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-3 align-top">
-                    <div className="flex items-center">
-                      <code>admin@evilcatkimigmail.onmicrosoft.com</code>
-                      <CopyButton value="admin@evilcatkimigmail.onmicrosoft.com" label="admin email" />
-                    </div>
-                    <div className="mt-1 text-[10px] uppercase tracking-wide text-slate-500">App admin · sees Admin link in chat header</div>
-                  </td>
-                  <td className="px-4 py-3 align-top text-slate-700">
-                    Every doc in the index (ACL filter bypassed)
-                  </td>
-                  <td className="px-4 py-3 align-top text-slate-700">
-                    Yes — any group · plus full user / group CRUD via{' '}
-                    <a href="#section-admin" className="underline hover:text-slate-900">§5</a>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <span className="font-semibold">Password (all four):</span>
-              <code className="font-mono">Hoanganh268*</code>
-              <CopyButton value="Hoanganh268*" label="password" />
-            </div>
-            <div className="mt-2 text-amber-800">
-              Demo-only credentials — rotate or disable after the demo session.
-            </div>
-          </div>
-        </section>
-
-        {/* ==================================================================
-            SECTION 1 — FLOWS
-            ================================================================== */}
-        <section id="section-flows" className="mt-12 scroll-mt-6">
-          <h2 className="text-xl font-semibold text-slate-900">1 · Flows — how we work</h2>
-
-          <h3 className="mt-6 text-sm font-semibold uppercase tracking-wide text-slate-500">
-            Chat request — what happens when a user asks a question
-          </h3>
-          <div className="mt-3 rounded-lg border border-slate-200 bg-white p-4">
-            <pre className="overflow-x-auto text-[11px] leading-snug text-slate-700">
-{`   BROWSER                    NEXT.JS API                EXTERNAL SERVICES
-   ┌──────────┐                ┌──────────────────┐
-   │ Sign in  │ ─────token───▶ │ verifyToken      │
-   └──────────┘                │   (claims-only)  │
-        │                      └────────┬─────────┘
-        │ ask question                  │
-        ▼                               ▼
-   ┌──────────┐  POST /api/chat ┌──────────────────┐         ┌──────────────────┐
-   │ Bearer + │ ───────────────▶│ getUserGroups    │ ──────▶ │ Microsoft Graph  │
-   │ message  │                 │ (5-min cache)    │ ◀────── │ transitiveMember │
-   └──────────┘                 └────────┬─────────┘         └──────────────────┘
-                                         ▼
-                                ┌──────────────────┐         ┌──────────────────┐
-                                │ embed(question)  │ ──────▶ │ Azure OpenAI     │
-                                │                  │ ◀────── │ embeddings       │
-                                └────────┬─────────┘         └──────────────────┘
-                                         ▼
-                                ┌──────────────────┐         ┌──────────────────┐
-                                │ secureSearch     │ ──────▶ │ Azure AI Search  │
-                                │ vector + ACL     │ ◀────── │ (ACL filter)     │
-                                └────────┬─────────┘         └──────────────────┘
-                                         ▼
-                                ┌──────────────────┐
-                                │ final-mile ACL   │   chunks dropped if any
-                                │   re-check       │   slipped past the filter
-                                └────────┬─────────┘
-                                         ▼
-                                ┌──────────────────┐         ┌──────────────────┐
-                                │ build prompt +   │ ──────▶ │ Anthropic API    │
-                                │ stream to Claude │ ◀────── │ (haiku-4-5)      │
-                                └────────┬─────────┘         └──────────────────┘
-                                         ▼
-                                ┌──────────────────┐         ┌──────────────────┐
-                                │ audit log        │ ──────▶ │ Application      │
-                                │                  │         │ Insights traces  │
-                                └────────┬─────────┘         └──────────────────┘
-                                         │
-   ┌──────────┐  SSE tokens              │
-   │ render   │ ◀────────────────────────┘
-   └──────────┘`}
-            </pre>
-          </div>
-
-          <ol className="relative mt-4 space-y-3 border-l border-slate-200 pl-6">
-            {REQUEST_FLOW.map((s) => (
-              <li key={s.n} className="relative">
-                <span className="absolute -left-[2.0625rem] flex h-6 w-6 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white">
-                  {s.n}
-                </span>
-                <div className="text-sm text-slate-700">{s.text}</div>
-              </li>
-            ))}
-          </ol>
-
-          <h3 className="mt-10 text-sm font-semibold uppercase tracking-wide text-slate-500">
-            Indexing flow — how documents get into the system
-          </h3>
-          <div className="mt-3 rounded-lg border border-slate-200 bg-white p-4">
-            <pre className="overflow-x-auto text-[11px] leading-snug text-slate-700">
-{`SEED (developer source)               UPLOAD (user-published)
-sample-docs/<dept>/*.md                /api/upload (PDF / DOCX / MD / TXT / HTML)
-        │                                       │
-        │ npm run index-docs                    │ extract text per file type
-        │                                       │ (mammoth / pdf-parse / passthrough)
-        ▼                                       ▼
-        ┌──────────────────────────────────────────────┐
-        │  Chunk to ~500 tokens                        │
-        │  Embed each chunk via Azure OpenAI           │
-        └─────────────────────┬────────────────────────┘
-                              │
-            ┌─────────────────┼─────────────────┐
-            ▼                                   ▼
-   ┌──────────────────┐                ┌──────────────────┐
-   │ Azure AI Search  │                │ Azure Blob       │
-   │ secure-docs-     │                │ uploads/docs/    │
-   │   index          │                │   <dept>/<name>  │
-   │                  │                │                  │
-   │ chunk fields:    │                │ originals stored │
-   │  id, content,    │                │ for download     │
-   │  contentVector,  │                │                  │
-   │  allowedGroups,  │                │ chunk.blobName ──┘ (pointer
-   │  allowedUsers,   │                                       back)
-   │  blobName,       │
-   │  uploader_oid    │
-   └──────────────────┘`}
-            </pre>
-          </div>
-
-          <ol className="relative mt-4 space-y-3 border-l border-slate-200 pl-6">
-            {INDEX_FLOW.map((s) => (
-              <li key={s.n} className="relative">
-                <span className="absolute -left-[2.0625rem] flex h-6 w-6 items-center justify-center rounded-full bg-purple-600 text-xs font-semibold text-white">
-                  {s.n}
-                </span>
-                <div className="text-sm text-slate-700">{s.text}</div>
-              </li>
-            ))}
-          </ol>
-        </section>
-
-        {/* ==================================================================
-            SECTION 2 — TECH
-            ================================================================== */}
-        <section id="section-tech" className="mt-14 scroll-mt-6">
-          <h2 className="text-xl font-semibold text-slate-900">2 · Tech — how this works</h2>
-          <p className="mt-1 text-sm text-slate-600">
-            Six logical layers. The ACL gate sits at layer 4 (Azure AI Search), with a redundant
-            check in layer 3 (orchestration). Layer 5 is conceptual — it&rsquo;s the contract that
-            Claude (layer 6) only ever sees the authorized output of layer 4.
-          </p>
-          <ol className="mt-4 space-y-2">
-            {LAYERS.map((L) => (
-              <li key={L.num} className={`rounded-lg border p-4 ${TONE_CLASSES[L.tone]}`}>
-                <div className="flex items-start gap-3">
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-sm font-semibold text-slate-900 ring-1 ring-slate-300">
-                    {L.num}
-                  </span>
-                  <div className="min-w-0">
-                    <div className="font-semibold text-slate-900">{L.title}</div>
-                    <div className="mt-1 text-sm text-slate-700">{L.role}</div>
-                    <div className="mt-1 text-xs uppercase tracking-wide text-slate-500">{L.tech}</div>
-                  </div>
-                </div>
-              </li>
-            ))}
-          </ol>
-
-          <h3 className="mt-8 text-sm font-semibold uppercase tracking-wide text-slate-500">
-            Tech stack at a glance
-          </h3>
-          <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200 bg-white">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                <tr>
-                  <th className="px-4 py-2">Layer</th>
-                  <th className="px-4 py-2">Tech / library</th>
-                  <th className="px-4 py-2">Where in code</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                <tr>
-                  <td className="px-4 py-2 align-top">Frontend</td>
-                  <td className="px-4 py-2 align-top">Next.js 14, React, Tailwind, MSAL React</td>
-                  <td className="px-4 py-2 align-top font-mono text-xs">app/page.tsx, app/login/page.tsx</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-2 align-top">Auth (browser)</td>
-                  <td className="px-4 py-2 align-top">@azure/msal-browser</td>
-                  <td className="px-4 py-2 align-top font-mono text-xs">app/providers/MsalProvider.tsx</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-2 align-top">Auth (server)</td>
-                  <td className="px-4 py-2 align-top">jsonwebtoken (claims-only validation)</td>
-                  <td className="px-4 py-2 align-top font-mono text-xs">lib/auth/verifyToken.ts</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-2 align-top">Groups</td>
-                  <td className="px-4 py-2 align-top">Microsoft Graph (transitiveMemberOf)</td>
-                  <td className="px-4 py-2 align-top font-mono text-xs">lib/auth/getUserGroups.ts</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-2 align-top">Embeddings</td>
-                  <td className="px-4 py-2 align-top">Azure OpenAI text-embedding-3-small</td>
-                  <td className="px-4 py-2 align-top font-mono text-xs">lib/search/embedder.ts</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-2 align-top">Search</td>
-                  <td className="px-4 py-2 align-top">@azure/search-documents (vector + filter)</td>
-                  <td className="px-4 py-2 align-top font-mono text-xs">lib/search/secureSearch.ts</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-2 align-top">LLM</td>
-                  <td className="px-4 py-2 align-top">@anthropic-ai/sdk (Claude haiku-4-5)</td>
-                  <td className="px-4 py-2 align-top font-mono text-xs">lib/claude/client.ts</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-2 align-top">Storage</td>
-                  <td className="px-4 py-2 align-top">@azure/storage-blob</td>
-                  <td className="px-4 py-2 align-top font-mono text-xs">lib/storage/blobClient.ts</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-2 align-top">File extraction</td>
-                  <td className="px-4 py-2 align-top">mammoth (DOCX), pdf-parse (PDF), gray-matter (MD)</td>
-                  <td className="px-4 py-2 align-top font-mono text-xs">lib/extractors/index.ts</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-2 align-top">Audit</td>
-                  <td className="px-4 py-2 align-top">applicationinsights (App Insights traces)</td>
-                  <td className="px-4 py-2 align-top font-mono text-xs">lib/audit/logger.ts</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        {/* ==================================================================
-            SECTION 3 — UPLOAD
-            ================================================================== */}
-        <section id="section-upload" className="mt-14 scroll-mt-6">
-          <h2 className="text-xl font-semibold text-slate-900">3 · Upload — import documents into the system</h2>
+        <section id="section-upload" className="mt-14 scroll-mt-20">
+          <h2 className="text-xl font-semibold text-slate-900">4 · Upload — import documents into the system</h2>
           <p className="mt-1 text-sm text-slate-600">
             Documents come in through two paths: <strong>seed indexing</strong> (developer-curated
             files in <code>sample-docs/</code>, imported by <code>npm run index-docs</code>) and{' '}
@@ -731,16 +657,15 @@ sample-docs/<dept>/*.md                /api/upload (PDF / DOCX / MD / TXT / HTML
         </section>
 
         {/* ==================================================================
-            SECTION 4 — ADMIN (in-app user / group management)
+            SECTION 5 — ADMIN (in-app user / group management)
             ================================================================== */}
-        <section id="section-admin" className="mt-14 scroll-mt-6">
-          <h2 className="text-xl font-semibold text-slate-900">4 · Admin — manage users + groups in-app</h2>
+        <section id="section-admin" className="mt-14 scroll-mt-20">
+          <h2 className="text-xl font-semibold text-slate-900">5 · Admin — manage users + groups in-app</h2>
           <p className="mt-1 text-sm text-slate-600">
-            The <code>admin@</code> account in <a href="#section-accounts" className="underline hover:text-slate-900">Demo accounts</a> can sign in and use{' '}
+            An app admin (a member of <code>GROUP_APP_ADMINS_ID</code>) can sign in and use{' '}
             <Link href="/admin" className="underline hover:text-slate-900"><code>/admin</code></Link>{' '}
             to do create / read / update / delete on Entra users + Security groups directly,
-            without opening the Azure portal. Same shared password as alice / bob / upload — see
-            the password panel above.
+            without opening the Azure portal.
           </p>
 
           {/* Walkthrough */}
@@ -751,10 +676,9 @@ sample-docs/<dept>/*.md                /api/upload (PDF / DOCX / MD / TXT / HTML
             <li className="relative">
               <span className="absolute -left-[2.0625rem] flex h-6 w-6 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white">1</span>
               <div className="text-sm text-slate-700">
-                Sign in to <Link href="/login" className="underline hover:text-slate-900"><code>/login</code></Link> as{' '}
-                <code>admin@evilcatkimigmail.onmicrosoft.com</code>. The chat header shows an
-                <strong> Admin</strong> button (only visible to members of{' '}
-                <code>GROUP_APP_ADMINS_ID</code>).
+                Sign in to <Link href="/login" className="underline hover:text-slate-900"><code>/login</code></Link> as
+                a member of <code>GROUP_APP_ADMINS_ID</code>. The chat header shows an
+                <strong> Admin</strong> button (only visible to members of that group).
               </div>
             </li>
             <li className="relative">
@@ -894,7 +818,7 @@ sample-docs/<dept>/*.md                /api/upload (PDF / DOCX / MD / TXT / HTML
           </h3>
           <p className="mt-1 text-sm text-slate-600">
             Every admin action writes a structured row to Application Insights with a distinct
-            event prefix so the KQL view at §<a href="#section-azure" className="underline hover:text-slate-900">5</a>
+            event prefix so the KQL view at §<a href="#section-azure" className="underline hover:text-slate-900">6</a>
             picks it up alongside chat / upload events:
           </p>
           <ul className="mt-2 list-disc space-y-0.5 pl-5 text-xs font-mono text-slate-700">
@@ -909,10 +833,10 @@ sample-docs/<dept>/*.md                /api/upload (PDF / DOCX / MD / TXT / HTML
         </section>
 
         {/* ==================================================================
-            SECTION 5 — AZURE (was §4)
+            SECTION 6 — AZURE
             ================================================================== */}
-        <section id="section-azure" className="mt-14 scroll-mt-6">
-          <h2 className="text-xl font-semibold text-slate-900">5 · How Azure handles everything</h2>
+        <section id="section-azure" className="mt-14 scroll-mt-20">
+          <h2 className="text-xl font-semibold text-slate-900">6 · How Azure handles everything</h2>
           <p className="mt-1 text-sm text-slate-600">
             Five Azure resources plus one external service (Anthropic). Each has one job; the
             backend orchestrates them. All data at rest stays in Azure (Search index + Blob
