@@ -7,7 +7,9 @@
       "Bash(npm test *)",
       "Bash(node *)",
       "Bash(npm install *)",
-      "Bash(npm uninstall *)"
+      "Bash(npm uninstall *)",
+      "Bash(az account show *)",
+      "Bash(az account *)"
     ]
   }
 }

@@ -17,6 +17,9 @@ interface IndexedChunk {
   sourceUrl?: string;
   allowedGroups?: string[];
   uploader_oid?: string;
+  /** Set on uploaded chunks; absent on seed docs. The blob path's
+   *  extension is the most reliable format indicator we have. */
+  blobName?: string;
 }
 
 interface DocSummary {
@@ -42,6 +45,15 @@ interface DocSummary {
    *    - true if caller uploaded it (uploader_oid matches)
    *    - true if caller is a member of GROUP_UPLOADERS_ID (department admin) */
   canDelete: boolean;
+  /** Uppercase format token (e.g. 'PDF', 'DOCX', 'MD') derived from the
+   *  blob path's extension. 'MD' for seed docs (they're all Markdown).
+   *  Drives the small format pill in MyDocsModal so users can tell at a
+   *  glance which doc came in as which file type. */
+  format: string;
+  /** Original filename as the user uploaded it, when known. Empty for
+   *  seed docs (their "filename" is just the chunk id). Used in the
+   *  source modal so the user sees the exact name they uploaded. */
+  originalFilename: string;
 }
 
 /**
@@ -111,7 +123,7 @@ export async function GET(req: NextRequest) {
   const client = getSearchClient();
   const results = await client.search('*', {
     ...(filter ? { filter } : {}),
-    select: ['id', 'title', 'department', 'sourceUrl', 'allowedGroups', 'uploader_oid'],
+    select: ['id', 'title', 'department', 'sourceUrl', 'allowedGroups', 'uploader_oid', 'blobName'],
     top: 1000
   });
 
@@ -134,6 +146,19 @@ export async function GET(req: NextRequest) {
       const canDelete =
         provenance === 'self' || (provenance === 'other' && isUploadAdmin);
 
+      // Derive original filename + format from blobName. Upload route
+      // writes blobName as `docs/<dept>/<8-hex>-<sanitised-original-name>`
+      // — strip the docs/dept/<id>- prefix to recover the user's name.
+      // Seed docs have no blobName; they're always Markdown by convention.
+      let originalFilename = '';
+      let format = 'MD';
+      if (d.blobName) {
+        const base = d.blobName.replace(/^.*\//, '');
+        originalFilename = base.replace(/^[a-f0-9]{8}-/, '');
+        const extMatch = /\.([a-zA-Z0-9]+)$/.exec(originalFilename || base);
+        format = extMatch ? extMatch[1].toUpperCase() : 'FILE';
+      }
+
       byTitle.set(d.title, {
         id: d.id,
         title: d.title,
@@ -141,7 +166,9 @@ export async function GET(req: NextRequest) {
         sourceUrl: d.sourceUrl,
         provenance,
         allowedGroups: d.allowedGroups || [],
-        canDelete
+        canDelete,
+        format,
+        originalFilename
       });
     }
   }

@@ -8,7 +8,15 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 interface GraphMemberOfResponse {
-  value: Array<{ '@odata.type': string; id: string; displayName?: string }>;
+  value: Array<{
+    '@odata.type': string;
+    id: string;
+    displayName?: string;
+    description?: string;
+    /** Present on group objects; missing on directory roles / app roles. */
+    securityEnabled?: boolean;
+    mailEnabled?: boolean;
+  }>;
   '@odata.nextLink'?: string;
 }
 
@@ -53,11 +61,20 @@ export async function GET(req: NextRequest) {
   // BOTH `ConsistencyLevel: eventual` (already sent below) AND
   // `$count=true` are present. Without $count=true the request fails with
   // "Request_UnsupportedQuery: Sorting not supported for current query."
+  //
+  // We pull `securityEnabled,mailEnabled` on both paths so the non-admin
+  // (transitiveMemberOf) path can apply the same Security-group filter
+  // the admin path uses. Without it, transitiveMemberOf would surface
+  // M365 unified groups, distribution lists, and directory roles —
+  // none of which work as RAG ACL groups. The admin Groups list uses
+  // the same filter, so the upload picker now matches that list 1:1.
   let next: string | undefined = admin
     ? 'https://graph.microsoft.com/v1.0/groups' +
-      '?$select=id,displayName&$filter=securityEnabled eq true and mailEnabled eq false' +
+      '?$select=id,displayName,securityEnabled,mailEnabled' +
+      '&$filter=securityEnabled eq true and mailEnabled eq false' +
       '&$orderby=displayName&$count=true&$top=200'
-    : 'https://graph.microsoft.com/v1.0/me/transitiveMemberOf?$select=id,displayName&$top=200';
+    : 'https://graph.microsoft.com/v1.0/me/transitiveMemberOf' +
+      '?$select=id,displayName,securityEnabled,mailEnabled&$top=200';
 
   while (next) {
     const res = await fetch(next, {
@@ -71,14 +88,18 @@ export async function GET(req: NextRequest) {
     }
     const data = (await res.json()) as GraphMemberOfResponse;
     for (const obj of data.value) {
-      // /me/transitiveMemberOf returns mixed directoryObjects with an
-      // @odata.type discriminator; /groups returns groups directly with
-      // no discriminator. Accept either: include if it's a group, or
-      // if there's no type field at all (admin path).
+      // /me/transitiveMemberOf returns mixed directoryObjects (groups,
+      // directory roles, app role assignments) with an @odata.type
+      // discriminator. /groups returns groups directly with no
+      // discriminator. Accept only group objects, then narrow further
+      // to Security groups (securityEnabled=true, mailEnabled=false) —
+      // the only kind that show up in transitiveMemberOf claims and
+      // therefore work as RAG ACL groups.
       const t = obj['@odata.type'];
-      if (!t || t === '#microsoft.graph.group') {
-        groups.push({ id: obj.id, displayName: obj.displayName || obj.id });
-      }
+      const isGroup = !t || t === '#microsoft.graph.group';
+      if (!isGroup) continue;
+      if (obj.securityEnabled !== true || obj.mailEnabled !== false) continue;
+      groups.push({ id: obj.id, displayName: obj.displayName || obj.id });
     }
     next = data['@odata.nextLink'];
   }
@@ -122,11 +143,17 @@ export async function GET(req: NextRequest) {
   // endpoint re-checks this server-side regardless. Admins always
   // canUpload — they bypass the uploader-group gate.
   const uploaderGroupId = (process.env.GROUP_UPLOADERS_ID || '').trim() || null;
+  const adminGroupId = (process.env.GROUP_APP_ADMINS_ID || '').trim() || null;
   const canUpload = admin
     ? true
     : uploaderGroupId
     ? callerGroups.includes(uploaderGroupId)
     : true; // when no gate is set, anyone authenticated can upload
 
-  return Response.json({ groups, canUpload, uploaderGroupId, isAdmin: admin });
+  // Surface adminGroupId so the upload picker can hide it. Permission
+  // groups (uploaders + app-admins) are not content groups — sharing a
+  // doc INTO them would silently broaden access to anyone who later
+  // gets uploader/admin privileges. The /api/upload route re-rejects
+  // both group IDs server-side; this is the matching UI affordance.
+  return Response.json({ groups, canUpload, uploaderGroupId, adminGroupId, isAdmin: admin });
 }

@@ -35,6 +35,11 @@ interface SourceDoc {
   department?: string;
   sourceUrl?: string;
   content: string;
+  /** Uppercase format token (PDF / DOCX / MD / TXT / HTML). 'MD' for
+   *  seed docs by convention. Drives the format pill in the modal header. */
+  format?: string;
+  /** Original filename as the user uploaded it. Empty for seed docs. */
+  originalFilename?: string;
 }
 
 interface DocSummary {
@@ -54,6 +59,10 @@ interface DocSummary {
    *  endpoint re-validates server-side on every request — this flag is
    *  purely for UI affordance. */
   canDelete: boolean;
+  /** Uppercase format token (PDF / DOCX / MD / etc.). 'MD' for seeds. */
+  format: string;
+  /** Original filename as uploaded; empty for seed docs. */
+  originalFilename: string;
 }
 
 // Per-session conversation memory. Lives in sessionStorage (cleared when
@@ -639,11 +648,19 @@ function SourceModal({
         setError(`Download failed: ${res.status} ${await res.text()}`);
         return;
       }
+      // The raw endpoint sets Content-Disposition with the original
+      // filename for uploaded docs (e.g. `MyReport.pdf`). Use that so
+      // the user gets back the file they uploaded — not a synthetic
+      // `<chunkId>.md`. Falls back to the chunk id for seed docs whose
+      // header just says `<id>.md`.
+      const cd = res.headers.get('Content-Disposition') || '';
+      const cdMatch = /filename\*?=(?:UTF-8'')?["']?([^"';]+)["']?/i.exec(cd);
+      const filename = doc?.originalFilename || cdMatch?.[1] || `${id}.md`;
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${id}.md`;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -674,7 +691,25 @@ function SourceModal({
       >
         <div className="shrink-0 flex items-start justify-between gap-4 border-b bg-white px-6 pt-5 pb-3">
           <div className="min-w-0">
-            <h2 className="truncate text-lg font-semibold text-slate-900">{doc?.title || 'Source'}</h2>
+            <div className="flex items-center gap-2 min-w-0">
+              <h2 className="truncate text-lg font-semibold text-slate-900">{doc?.title || 'Source'}</h2>
+              {doc?.format && (
+                <span
+                  className="shrink-0 rounded border border-slate-300 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-700"
+                  title={`File format: ${doc.format}`}
+                >
+                  {doc.format}
+                </span>
+              )}
+            </div>
+            {/* Original filename — only shown for uploads (seed docs have
+                an empty originalFilename). Critical when title got cleaned
+                up but the user still wants to know what file this came from. */}
+            {doc?.originalFilename && (
+              <div className="mt-1 truncate text-xs text-slate-500" title={doc.originalFilename}>
+                {doc.originalFilename}
+              </div>
+            )}
             <div className="mt-1 flex flex-wrap gap-3 text-xs uppercase tracking-wide text-slate-500">
               {doc?.department && <span>{doc.department}</span>}
               <span>id: {id}</span>
@@ -989,8 +1024,25 @@ function MyDocsModal({
                           >
                             <div className="flex items-center gap-2">
                               <span className="font-medium text-slate-900">{d.title}</span>
+                              <span
+                                className="shrink-0 rounded border border-slate-300 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-700"
+                                title={`File format: ${d.format}`}
+                              >
+                                {d.format}
+                              </span>
                               <ProvenanceBadge p={d.provenance} />
                             </div>
+                            {/* Original filename — uploads only. Lets users
+                                spot "I uploaded MyReport.pdf" even when the
+                                title got cleaned up to "My Report". */}
+                            {d.originalFilename && (
+                              <div
+                                className="mt-0.5 truncate text-[11px] text-slate-500"
+                                title={d.originalFilename}
+                              >
+                                {d.originalFilename}
+                              </div>
+                            )}
                             {d.allowedGroups.length > 0 && (
                               <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-slate-500">
                                 <span className="text-slate-400">Visible to:</span>
@@ -1108,6 +1160,7 @@ function UploadModal({
   const [groups, setGroups] = useState<GroupChoice[] | null>(null);
   const [canUpload, setCanUpload] = useState<boolean>(true);
   const [uploaderGroupId, setUploaderGroupId] = useState<string | null>(null);
+  const [adminGroupId, setAdminGroupId] = useState<string | null>(null);
   const [selectedGroups, setSelectedGroups] = useState<Set<string>>(new Set());
   const [files, setFiles] = useState<File[]>([]);
   const [groupsLoading, setGroupsLoading] = useState(true);
@@ -1144,10 +1197,12 @@ function UploadModal({
             groups: GroupChoice[];
             canUpload?: boolean;
             uploaderGroupId?: string | null;
+            adminGroupId?: string | null;
           };
           setGroups(data.groups);
           if (typeof data.canUpload === 'boolean') setCanUpload(data.canUpload);
           if (data.uploaderGroupId !== undefined) setUploaderGroupId(data.uploaderGroupId);
+          if (data.adminGroupId !== undefined) setAdminGroupId(data.adminGroupId);
         }
       } catch (e) {
         if (!cancelled) setGroupsError((e as Error).message);
@@ -1304,10 +1359,17 @@ function UploadModal({
                 </div>
               )}
               {(() => {
-                // Hide the uploaders group from the picker — it's a permission
-                // group, not a content group. The backend rejects it anyway.
+                // Hide both permission groups (uploaders + app-admins) from
+                // the picker — they're permission groups, not content groups.
+                // Sharing INTO them would silently broaden access to anyone
+                // who later gets uploader/admin privileges. Backend rejects
+                // them anyway; this is the matching UI affordance.
                 const contentGroups = groups
-                  ? groups.filter((g) => !uploaderGroupId || g.id !== uploaderGroupId)
+                  ? groups.filter(
+                      (g) =>
+                        (!uploaderGroupId || g.id !== uploaderGroupId) &&
+                        (!adminGroupId || g.id !== adminGroupId)
+                    )
                   : [];
                 if (groups && contentGroups.length === 0) {
                   return (

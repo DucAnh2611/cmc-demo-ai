@@ -15,6 +15,7 @@ interface IndexedDoc {
   sourceUrl?: string;
   department?: string;
   allowedGroups?: string[];
+  blobName?: string;
 }
 
 export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
@@ -52,18 +53,31 @@ export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
   const client = getSearchClient();
   const results = await client.search('*', {
     filter,
-    select: ['id', 'content', 'title', 'sourceUrl', 'department'],
+    select: ['id', 'content', 'title', 'sourceUrl', 'department', 'blobName'],
     top: 1
   });
 
   for await (const item of results.results) {
     const d = item.document as IndexedDoc;
+    // Same derivation as /api/my-docs — recover original filename and
+    // format from blobName so the SourceModal header can show "MyReport.pdf
+    // · PDF" instead of just the cleaned-up title.
+    let originalFilename = '';
+    let format = 'MD';
+    if (d.blobName) {
+      const base = d.blobName.replace(/^.*\//, '');
+      originalFilename = base.replace(/^[a-f0-9]{8}-/, '');
+      const extMatch = /\.([a-zA-Z0-9]+)$/.exec(originalFilename || base);
+      format = extMatch ? extMatch[1].toUpperCase() : 'FILE';
+    }
     return Response.json({
       id: d.id,
       title: d.title,
       department: d.department,
       sourceUrl: d.sourceUrl,
-      content: d.content
+      content: d.content,
+      format,
+      originalFilename
     });
   }
 

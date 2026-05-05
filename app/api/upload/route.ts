@@ -265,7 +265,12 @@ export async function POST(req: NextRequest) {
       // chars in any non-whitespace run that long. Also applied to the
       // title to be safe.
       const safeText = breakLongTokens(extracted.text, 100);
-      const safeTitle = breakLongTokens(extracted.title.slice(0, 256), 100);
+      // Defensive fallback — if the extractor returned an empty title for
+      // any reason (PDF with no Info.Title and a degenerate filename like
+      // ".pdf"), use the original filename so the My Documents list,
+      // SourceModal, and upload result UI never render a blank line.
+      const titleForIndex = (extracted.title || '').trim() || file.name;
+      const safeTitle = breakLongTokens(titleForIndex.slice(0, 256), 100);
       if (safeText.length !== extracted.text.length) {
         console.log('[upload] broke long tokens', {
           filename: file.name,
