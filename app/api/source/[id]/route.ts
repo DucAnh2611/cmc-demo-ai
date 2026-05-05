@@ -3,6 +3,7 @@ import { NextRequest } from 'next/server';
 import { verifyAccessToken } from '@/lib/auth/verifyToken';
 import { getUserGroups } from '@/lib/auth/getUserGroups';
 import { buildGroupFilter, getSearchClient } from '@/lib/search/secureSearch';
+import { isAppAdmin } from '@/lib/admin/isAppAdmin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -34,15 +35,19 @@ export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
   }
 
   const groups = await getUserGroups(token);
+  const admin = isAppAdmin(groups);
   const aclFilter = buildGroupFilter(groups);
-  if (!aclFilter) {
+  if (!admin && !aclFilter) {
     return new Response('Not authorized', { status: 403 });
   }
 
   // Combine doc-id filter with the ACL filter so an unauthorized user can't
-  // peek at a doc just by guessing its id.
+  // peek at a doc just by guessing its id. Admin path skips the ACL part —
+  // they can fetch any source by id.
   const escapedId = id.replace(/'/g, "''");
-  const filter = `(id eq '${escapedId}') and (${aclFilter})`;
+  const filter = admin
+    ? `id eq '${escapedId}'`
+    : `(id eq '${escapedId}') and (${aclFilter})`;
 
   const client = getSearchClient();
   const results = await client.search('*', {

@@ -126,6 +126,11 @@ export default function ChatPage() {
   // dynamic list arrives — worth it to eliminate perceived latency on the
   // home screen.
   const [demoQuestions, setDemoQuestions] = useState<string[]>(STATIC_FALLBACK_QUESTIONS);
+  // True when the signed-in user is in GROUP_APP_ADMINS_ID. Used to
+  // surface the Admin link in the header. Server-derived (returned by
+  // /api/my-groups), so the client can't fake elevation — even if a
+  // user flipped this to true, every admin endpoint re-checks server-side.
+  const [isAdmin, setIsAdmin] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -191,6 +196,32 @@ export default function ChatPage() {
         }
       } catch {
         // Static fallback already rendered — silent on error.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated, acquireToken]);
+
+  // Determine admin status once on sign-in. /api/my-groups returns
+  // isAdmin: boolean — derived server-side from GROUP_APP_ADMINS_ID
+  // membership. We use it solely to show the Admin nav link; every
+  // admin endpoint re-validates on its own, so a tampered client
+  // can't bypass the gate.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await acquireToken();
+        const res = await fetch('/api/my-groups', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (cancelled || !res.ok) return;
+        const data = (await res.json()) as { isAdmin?: boolean };
+        if (data.isAdmin) setIsAdmin(true);
+      } catch {
+        // Silent — admin link just stays hidden.
       }
     })();
     return () => {
@@ -359,6 +390,15 @@ export default function ChatPage() {
           >
             How it works
           </Link>
+          {isAdmin && (
+            <Link
+              href="/admin"
+              className="rounded-md border border-slate-900 px-3 py-1.5 text-sm font-medium text-slate-900 hover:bg-slate-900 hover:text-white"
+              title="Manage users and groups"
+            >
+              Admin
+            </Link>
+          )}
           {/* Memory cap badge + Clear. Visible cap reinforces the "AI sees
               only what you can see" story during demo — every turn re-runs
               retrieval against current ACL, and Clear gives a clean reset. */}

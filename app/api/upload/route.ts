@@ -14,6 +14,7 @@ import {
   normaliseContentType
 } from '@/lib/extractors';
 import { auditLog } from '@/lib/audit/logger';
+import { isAppAdmin } from '@/lib/admin/isAppAdmin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -92,30 +93,49 @@ export async function POST(req: NextRequest) {
   const userGroups = await getUserGroups(token);
   const userGroupSet = new Set(userGroups);
 
+  // App admins are a tenant-wide superset — they bypass the uploader-
+  // group gate and the per-target-group membership check (so they can
+  // publish to any content group). Other safety rules (no sharing into
+  // the uploaders/admins group itself, file size/type/count) still
+  // apply to admins.
+  const admin = isAppAdmin(userGroups);
+
   // Optional gate: only members of GROUP_UPLOADERS_ID can use this endpoint.
   // When the env var is set, non-members get a clean 403 even if they would
-  // otherwise be allowed to share with their groups.
+  // otherwise be allowed to share with their groups. Admins skip this gate.
   const uploaderGroupId = (process.env.GROUP_UPLOADERS_ID || '').trim();
-  if (uploaderGroupId && !userGroupSet.has(uploaderGroupId)) {
+  if (!admin && uploaderGroupId && !userGroupSet.has(uploaderGroupId)) {
     return new Response(
       'Upload permission denied. Your account is not a member of the uploaders group.',
       { status: 403 }
     );
   }
 
-  const unauthorisedGroups = requestedGroups.filter((g) => !userGroupSet.has(g));
-  if (unauthorisedGroups.length > 0) {
-    return new Response(
-      `You can only share documents with groups you belong to. Unauthorized: ${unauthorisedGroups.join(', ')}`,
-      { status: 403 }
-    );
+  // Non-admin users can only share with groups they themselves belong to.
+  // Admin path skips this check.
+  if (!admin) {
+    const unauthorisedGroups = requestedGroups.filter((g) => !userGroupSet.has(g));
+    if (unauthorisedGroups.length > 0) {
+      return new Response(
+        `You can only share documents with groups you belong to. Unauthorized: ${unauthorisedGroups.join(', ')}`,
+        { status: 403 }
+      );
+    }
   }
-  // Don't allow sharing INTO the uploaders group — it's a permission group,
-  // not a content group. Otherwise an uploader could publish docs that any
-  // future uploader could see.
+  // Don't allow sharing INTO permission groups (uploaders / app-admins) —
+  // those are permission groups, not content groups. Otherwise any
+  // future uploader / admin would inherit access to docs published this
+  // way. Applies to admins too.
+  const adminGroupId = (process.env.GROUP_APP_ADMINS_ID || '').trim();
   if (uploaderGroupId && requestedGroups.includes(uploaderGroupId)) {
     return new Response(
       `Cannot share with the uploaders group itself — pick content groups (HR / Finance / Public / etc.) instead.`,
+      { status: 400 }
+    );
+  }
+  if (adminGroupId && requestedGroups.includes(adminGroupId)) {
+    return new Response(
+      `Cannot share with the app-admins group itself — pick content groups instead.`,
       { status: 400 }
     );
   }

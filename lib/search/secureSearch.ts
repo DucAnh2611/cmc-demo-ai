@@ -59,6 +59,10 @@ export interface SecureSearchOptions {
   top?: number;
   /** When true, returns 0 results instead of throwing if the user has no groups. */
   allowEmpty?: boolean;
+  /** When true, skip the ACL filter entirely — used by admin role to
+   *  see every document in the index. The caller is responsible for
+   *  authorising this (typically via isAppAdmin in lib/admin). */
+  bypassAcl?: boolean;
 }
 
 export async function secureSearch(
@@ -68,9 +72,10 @@ export async function secureSearch(
 ): Promise<RetrievedChunk[]> {
   const top = opts.top ?? 5;
 
-  const filter = buildGroupFilter(userGroups);
-  if (!filter) {
-    if (opts.allowEmpty) return [];
+  // Admin path: search every chunk regardless of allowedGroups.
+  // Non-admin path: build the ACL filter; empty groups → no results.
+  const filter = opts.bypassAcl ? undefined : buildGroupFilter(userGroups);
+  if (!opts.bypassAcl && !filter) {
     return [];
   }
 
@@ -86,7 +91,7 @@ export async function secureSearch(
   // security-trimmed identically to vector hits.
   const t0 = Date.now();
   const results = await client.search(query, {
-    filter,
+    ...(filter ? { filter } : {}),
     top,
     searchFields: ['content', 'title'],
     select: ['id', 'content', 'title', 'sourceUrl', 'department', 'allowedGroups'],

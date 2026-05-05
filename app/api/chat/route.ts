@@ -14,6 +14,7 @@ import { expandQuery } from '@/lib/claude/expandQuery';
 import { sanitizeHistory } from '@/lib/chat/sanitizeHistory';
 import { auditLog } from '@/lib/audit/logger';
 import { svcLog } from '@/lib/devLog';
+import { isAppAdmin } from '@/lib/admin/isAppAdmin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -129,6 +130,12 @@ export async function POST(req: NextRequest) {
   // and re-fetches groups from Graph — required for Scenario E (Section 7.6).
   const groups = await getUserGroups(token);
 
+  // App admins bypass the ACL filter — they're a tenant-wide super-
+  // reader role on top of doing user/group management. See
+  // lib/admin/isAppAdmin for the gate. Non-admin users get the normal
+  // group-intersection filter applied by secureSearch.
+  const admin = isAppAdmin(groups);
+
   // Query expansion → hybrid search per variant → merge by chunk id.
   //
   // We ask Haiku for ≤2 paraphrases (e.g. "compensation policy" →
@@ -140,7 +147,7 @@ export async function POST(req: NextRequest) {
   // post-merge defense-in-depth check below re-validates allowedGroups.
   const variants = await expandQuery(message);
   const perVariantResults = await Promise.all(
-    variants.map((v) => secureSearch(v, groups, { top: 5 }))
+    variants.map((v) => secureSearch(v, groups, { top: 5, bypassAcl: admin }))
   );
   const mergedById = new Map<string, RetrievedChunk>();
   for (const results of perVariantResults) {
@@ -174,18 +181,24 @@ export async function POST(req: NextRequest) {
   // change leaked an unauthorized chunk into the result set. If that ever
   // happens, log loudly so it surfaces in audit and stop the bad chunk
   // from reaching Claude or the citations payload.
+  //
+  // Admin path bypasses this — admins see EVERY doc by design. Without
+  // the bypass, every chunk would fail the per-group intersection check
+  // and the admin would see nothing.
   const userGroupSet = new Set(groups);
-  const aclVerified = allChunks.filter((c) => {
-    const ok = !!c.allowedGroups && c.allowedGroups.some((g) => userGroupSet.has(g));
-    if (!ok) {
-      console.error('[acl] chunk failed final-mile ACL check — dropping', {
-        chunkId: c.id,
-        chunkAllowedGroups: c.allowedGroups,
-        userOid: user.oid
+  const aclVerified = admin
+    ? allChunks
+    : allChunks.filter((c) => {
+        const ok = !!c.allowedGroups && c.allowedGroups.some((g) => userGroupSet.has(g));
+        if (!ok) {
+          console.error('[acl] chunk failed final-mile ACL check — dropping', {
+            chunkId: c.id,
+            chunkAllowedGroups: c.allowedGroups,
+            userOid: user.oid
+          });
+        }
+        return ok;
       });
-    }
-    return ok;
-  });
 
   // Pass all 5 ACL-verified chunks through — per §5.5 of the demo guide
   // (top 5). The earlier 60%-of-top score filter was tightening citations,

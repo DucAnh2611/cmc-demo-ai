@@ -1,6 +1,8 @@
 import '@/lib/envGuard';
 import { NextRequest } from 'next/server';
 import { verifyAccessToken } from '@/lib/auth/verifyToken';
+import { getUserGroups } from '@/lib/auth/getUserGroups';
+import { isAppAdmin } from '@/lib/admin/isAppAdmin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -39,9 +41,23 @@ export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const withMemberCount = url.searchParams.get('withMemberCount') === 'true';
 
+  // App admins get the FULL list of Security groups in the tenant (so
+  // they can share uploads with any group, not only the ones they
+  // belong to). Non-admins see only their own transitiveMemberOf — same
+  // contract as before this change.
+  const callerGroups = await getUserGroups(token);
+  const admin = isAppAdmin(callerGroups);
+
   const groups: Array<{ id: string; displayName: string; memberCount?: number | null }> = [];
-  let next: string | undefined =
-    'https://graph.microsoft.com/v1.0/me/transitiveMemberOf?$select=id,displayName&$top=200';
+  // Note: Graph rejects $filter + $orderby together on /groups unless
+  // BOTH `ConsistencyLevel: eventual` (already sent below) AND
+  // `$count=true` are present. Without $count=true the request fails with
+  // "Request_UnsupportedQuery: Sorting not supported for current query."
+  let next: string | undefined = admin
+    ? 'https://graph.microsoft.com/v1.0/groups' +
+      '?$select=id,displayName&$filter=securityEnabled eq true and mailEnabled eq false' +
+      '&$orderby=displayName&$count=true&$top=200'
+    : 'https://graph.microsoft.com/v1.0/me/transitiveMemberOf?$select=id,displayName&$top=200';
 
   while (next) {
     const res = await fetch(next, {
@@ -55,7 +71,12 @@ export async function GET(req: NextRequest) {
     }
     const data = (await res.json()) as GraphMemberOfResponse;
     for (const obj of data.value) {
-      if (obj['@odata.type'] === '#microsoft.graph.group') {
+      // /me/transitiveMemberOf returns mixed directoryObjects with an
+      // @odata.type discriminator; /groups returns groups directly with
+      // no discriminator. Accept either: include if it's a group, or
+      // if there's no type field at all (admin path).
+      const t = obj['@odata.type'];
+      if (!t || t === '#microsoft.graph.group') {
         groups.push({ id: obj.id, displayName: obj.displayName || obj.id });
       }
     }
@@ -98,11 +119,14 @@ export async function GET(req: NextRequest) {
 
   // Surface upload permission so the UI can hide the form (or show a "no
   // permission" message) before the user fills it in. The /api/upload
-  // endpoint re-checks this server-side regardless.
+  // endpoint re-checks this server-side regardless. Admins always
+  // canUpload — they bypass the uploader-group gate.
   const uploaderGroupId = (process.env.GROUP_UPLOADERS_ID || '').trim() || null;
-  const canUpload = uploaderGroupId
-    ? groups.some((g) => g.id === uploaderGroupId)
+  const canUpload = admin
+    ? true
+    : uploaderGroupId
+    ? callerGroups.includes(uploaderGroupId)
     : true; // when no gate is set, anyone authenticated can upload
 
-  return Response.json({ groups, canUpload, uploaderGroupId });
+  return Response.json({ groups, canUpload, uploaderGroupId, isAdmin: admin });
 }

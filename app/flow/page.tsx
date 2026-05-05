@@ -83,7 +83,8 @@ export default function FlowPage() {
             <a href="#section-flows" className="rounded-full border border-slate-300 px-3 py-1 text-slate-700 hover:bg-white">1 · Flows</a>
             <a href="#section-tech" className="rounded-full border border-slate-300 px-3 py-1 text-slate-700 hover:bg-white">2 · Tech</a>
             <a href="#section-upload" className="rounded-full border border-slate-300 px-3 py-1 text-slate-700 hover:bg-white">3 · Upload</a>
-            <a href="#section-azure" className="rounded-full border border-slate-300 px-3 py-1 text-slate-700 hover:bg-white">4 · Azure</a>
+            <a href="#section-admin" className="rounded-full border border-slate-300 px-3 py-1 text-slate-700 hover:bg-white">4 · Admin</a>
+            <a href="#section-azure" className="rounded-full border border-slate-300 px-3 py-1 text-slate-700 hover:bg-white">5 · Azure</a>
           </nav>
         </header>
 
@@ -336,7 +337,7 @@ export default function FlowPage() {
           <h2 className="text-xl font-semibold text-slate-900">Demo accounts</h2>
           <p className="mt-1 text-sm text-slate-600">
             Sign in to the chat at <Link href="/login" className="underline hover:text-slate-900"><code>/login</code></Link>{' '}
-            with any of these. Same password for all three.
+            with any of these. Same password for all four.
           </p>
           <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200 bg-white">
             <table className="w-full text-left text-sm">
@@ -378,12 +379,28 @@ export default function FlowPage() {
                   <td className="px-4 py-3 align-top text-slate-700">All three (HR + Finance + Public)</td>
                   <td className="px-4 py-3 align-top text-slate-700">Yes — to any group they belong to</td>
                 </tr>
+                <tr>
+                  <td className="px-4 py-3 align-top">
+                    <div className="flex items-center">
+                      <code>admin@evilcatkimigmail.onmicrosoft.com</code>
+                      <CopyButton value="admin@evilcatkimigmail.onmicrosoft.com" label="admin email" />
+                    </div>
+                    <div className="mt-1 text-[10px] uppercase tracking-wide text-slate-500">App admin · sees Admin link in chat header</div>
+                  </td>
+                  <td className="px-4 py-3 align-top text-slate-700">
+                    Every doc in the index (ACL filter bypassed)
+                  </td>
+                  <td className="px-4 py-3 align-top text-slate-700">
+                    Yes — any group · plus full user / group CRUD via{' '}
+                    <a href="#section-admin" className="underline hover:text-slate-900">§5</a>
+                  </td>
+                </tr>
               </tbody>
             </table>
           </div>
           <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <span className="font-semibold">Password (all three):</span>
+              <span className="font-semibold">Password (all four):</span>
               <code className="font-mono">Hoanganh268*</code>
               <CopyButton value="Hoanganh268*" label="password" />
             </div>
@@ -714,10 +731,188 @@ sample-docs/<dept>/*.md                /api/upload (PDF / DOCX / MD / TXT / HTML
         </section>
 
         {/* ==================================================================
-            SECTION 4 — AZURE
+            SECTION 4 — ADMIN (in-app user / group management)
+            ================================================================== */}
+        <section id="section-admin" className="mt-14 scroll-mt-6">
+          <h2 className="text-xl font-semibold text-slate-900">4 · Admin — manage users + groups in-app</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            The <code>admin@</code> account in <a href="#section-accounts" className="underline hover:text-slate-900">Demo accounts</a> can sign in and use{' '}
+            <Link href="/admin" className="underline hover:text-slate-900"><code>/admin</code></Link>{' '}
+            to do create / read / update / delete on Entra users + Security groups directly,
+            without opening the Azure portal. Same shared password as alice / bob / upload — see
+            the password panel above.
+          </p>
+
+          {/* Walkthrough */}
+          <h3 className="mt-6 text-sm font-semibold uppercase tracking-wide text-slate-500">
+            How an admin uses the panel
+          </h3>
+          <ol className="relative mt-3 space-y-3 border-l border-slate-200 pl-6">
+            <li className="relative">
+              <span className="absolute -left-[2.0625rem] flex h-6 w-6 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white">1</span>
+              <div className="text-sm text-slate-700">
+                Sign in to <Link href="/login" className="underline hover:text-slate-900"><code>/login</code></Link> as{' '}
+                <code>admin@evilcatkimigmail.onmicrosoft.com</code>. The chat header shows an
+                <strong> Admin</strong> button (only visible to members of{' '}
+                <code>GROUP_APP_ADMINS_ID</code>).
+              </div>
+            </li>
+            <li className="relative">
+              <span className="absolute -left-[2.0625rem] flex h-6 w-6 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white">2</span>
+              <div className="text-sm text-slate-700">
+                Click <strong>Admin</strong> → <code>/admin</code> opens with two tabs:{' '}
+                <strong>Users</strong> and <strong>Groups</strong>. Both have list / search /
+                detail panels, plus a <strong>↻</strong> refresh on each.
+              </div>
+            </li>
+            <li className="relative">
+              <span className="absolute -left-[2.0625rem] flex h-6 w-6 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white">3</span>
+              <div className="text-sm text-slate-700">
+                <strong>Users tab — full CRUD:</strong>
+                <ul className="mt-1 list-disc space-y-0.5 pl-5 text-slate-600">
+                  <li><strong>Create</strong>: + New user → UPN, display name, auto-generated password (regen + copy buttons), optional initial group memberships</li>
+                  <li><strong>Read</strong>: click any row → detail panel with identity, group memberships, Object ID, deep-link to Azure</li>
+                  <li><strong>Update</strong>: Edit → display name / job title / account-enabled toggle (partial PATCH)</li>
+                  <li><strong>Delete</strong>: type the UPN to confirm. <em>Refused for users in the admin group</em> + your own account.</li>
+                  <li><strong>Reset password</strong>: amber panel, generates new password, you share it securely</li>
+                  <li><strong>Add to group</strong> / <strong>× remove</strong>: inline picker on the detail panel</li>
+                </ul>
+              </div>
+            </li>
+            <li className="relative">
+              <span className="absolute -left-[2.0625rem] flex h-6 w-6 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white">4</span>
+              <div className="text-sm text-slate-700">
+                <strong>Groups tab — full CRUD on Security groups:</strong>
+                <ul className="mt-1 list-disc space-y-0.5 pl-5 text-slate-600">
+                  <li><strong>Create</strong>: + New group → name, description (Security type + non-mail forced server-side)</li>
+                  <li><strong>Read</strong>: detail panel shows description, member list, Object ID, deep-link</li>
+                  <li><strong>Update</strong>: Edit → name + description (partial PATCH; empty description → null on Graph)</li>
+                  <li><strong>Delete</strong>: type the group name to confirm. <em>Refused on the admin and uploaders groups</em>.</li>
+                  <li><strong>+ Add member</strong> / <strong>× remove</strong>: search-by-UPN picker. Adding to admin group is blocked.</li>
+                </ul>
+              </div>
+            </li>
+            <li className="relative">
+              <span className="absolute -left-[2.0625rem] flex h-6 w-6 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white">5</span>
+              <div className="text-sm text-slate-700">
+                Every mutation auto-refreshes both the affected detail panel and the parent list,
+                plus a manual <strong>↻ refresh</strong> exists on each surface for stale-data
+                situations (changes from another admin session, direct Azure portal edits,
+                Graph eventual-consistency lag).
+              </div>
+            </li>
+          </ol>
+
+          {/* Safety guards table */}
+          <h3 className="mt-8 text-sm font-semibold uppercase tracking-wide text-slate-500">
+            Safety guards (server + UI, defence in depth)
+          </h3>
+          <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200 bg-white">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-4 py-2">Action</th>
+                  <th className="px-4 py-2">Where blocked</th>
+                  <th className="px-4 py-2">Why</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                <tr>
+                  <td className="px-4 py-3 align-top">Delete your own account</td>
+                  <td className="px-4 py-3 align-top text-slate-700">Server (400)</td>
+                  <td className="px-4 py-3 align-top text-slate-700">Prevent locking yourself out of the panel</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-3 align-top">Delete a user in the admin group</td>
+                  <td className="px-4 py-3 align-top text-slate-700">Server (400) + UI hides Delete + shows <em>Protected · admin user</em></td>
+                  <td className="px-4 py-3 align-top text-slate-700">Admin churn is a tenant-level decision; portal-only</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-3 align-top">Delete the admin group</td>
+                  <td className="px-4 py-3 align-top text-slate-700">Server (400) + UI hides Delete + shows <em>Protected</em></td>
+                  <td className="px-4 py-3 align-top text-slate-700">Would lock everyone out of <code>/admin</code></td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-3 align-top">Delete the uploaders group</td>
+                  <td className="px-4 py-3 align-top text-slate-700">Server (400) + UI hides Delete + shows <em>Protected</em></td>
+                  <td className="px-4 py-3 align-top text-slate-700">Would break uploads</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-3 align-top">Add a user to the admin group</td>
+                  <td className="px-4 py-3 align-top text-slate-700">Server (400) + UI hides admin group from picker + shows <em>Manage in Azure portal ↗</em></td>
+                  <td className="px-4 py-3 align-top text-slate-700">Stops a compromised admin session from quietly seeding new admins</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-3 align-top">Remove yourself from the admin group</td>
+                  <td className="px-4 py-3 align-top text-slate-700">Server (400)</td>
+                  <td className="px-4 py-3 align-top text-slate-700">Same lockout-prevention as self-delete</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          {/* Prerequisites */}
+          <h3 className="mt-8 text-sm font-semibold uppercase tracking-wide text-slate-500">
+            Azure prerequisites (one-time, per-tenant)
+          </h3>
+          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
+            <p>
+              For the <code>admin@</code> account to actually do anything, three things must be
+              set up in Azure (the in-app gate alone is not enough — Graph enforces RBAC + OAuth
+              on every write):
+            </p>
+            <ol className="mt-2 list-decimal space-y-1 pl-5">
+              <li>
+                <strong>App registration → API permissions (Delegated)</strong>: add{' '}
+                <code>User.ReadWrite.All</code>, <code>Group.ReadWrite.All</code>,{' '}
+                <code>UserAuthenticationMethod.ReadWrite.All</code> — then click{' '}
+                <strong>Grant admin consent for &lt;tenant&gt;</strong>
+              </li>
+              <li>
+                <strong>Entra → Users → admin@ → Assigned roles</strong>: add{' '}
+                <strong>User Administrator</strong> (manage users + groups) AND{' '}
+                <strong>Privileged Authentication Administrator</strong> (reset passwords on
+                modern tenants where the legacy <code>passwordProfile</code> path is blocked)
+              </li>
+              <li>
+                <code>.env.local</code> has <code>GROUP_APP_ADMINS_ID</code> set to the GUID of
+                the security group containing <code>admin@</code>
+              </li>
+            </ol>
+            <p className="mt-2">
+              The chat&rsquo;s <strong>Admin</strong> link only appears when (1) the OAuth
+              scopes are present in the user&rsquo;s token AND (2) the user is in{' '}
+              <code>GROUP_APP_ADMINS_ID</code>. Graph then enforces the Entra role on every
+              actual write. If a step is missing, the admin sees a 403 with a verbatim Graph
+              error explaining which prerequisite isn&rsquo;t in place.
+            </p>
+          </div>
+
+          {/* Audit */}
+          <h3 className="mt-8 text-sm font-semibold uppercase tracking-wide text-slate-500">
+            Audit
+          </h3>
+          <p className="mt-1 text-sm text-slate-600">
+            Every admin action writes a structured row to Application Insights with a distinct
+            event prefix so the KQL view at §<a href="#section-azure" className="underline hover:text-slate-900">5</a>
+            picks it up alongside chat / upload events:
+          </p>
+          <ul className="mt-2 list-disc space-y-0.5 pl-5 text-xs font-mono text-slate-700">
+            <li>[admin:create-user] / [admin:update-user] / [admin:delete-user] / [admin:reset-password]</li>
+            <li>[admin:create-group] / [admin:update-group] / [admin:delete-group]</li>
+            <li>[admin:add-member] / [admin:remove-member]</li>
+          </ul>
+          <p className="mt-2 text-xs text-slate-500">
+            Password values are NEVER written to the audit row — only the fact that a reset
+            happened (with the deleter&rsquo;s identity).
+          </p>
+        </section>
+
+        {/* ==================================================================
+            SECTION 5 — AZURE (was §4)
             ================================================================== */}
         <section id="section-azure" className="mt-14 scroll-mt-6">
-          <h2 className="text-xl font-semibold text-slate-900">4 · How Azure handles everything</h2>
+          <h2 className="text-xl font-semibold text-slate-900">5 · How Azure handles everything</h2>
           <p className="mt-1 text-sm text-slate-600">
             Five Azure resources plus one external service (Anthropic). Each has one job; the
             backend orchestrates them. All data at rest stays in Azure (Search index + Blob

@@ -539,14 +539,15 @@ const sections = [
     live: liveProbeIdentity
   },
   {
-    title: '2. Demo group IDs (consumed by /api/upload + indexer)',
+    title: '2. Demo group IDs (consumed by /api/upload + indexer + admin gate)',
     vars: () => {
       checkEnv('GROUP_HR_ID');
       checkEnv('GROUP_FINANCE_ID');
       checkEnv('GROUP_PUBLIC_ID');
       checkEnv('GROUP_UPLOADERS_ID', 'public', '(unset = any authenticated user can upload)');
+      checkEnv('GROUP_APP_ADMINS_ID', 'public', '(unset = /admin is disabled)');
     }
-    // No live probe — group IDs are validated by /api/upload at runtime.
+    // No live probe — group IDs are validated by /api/upload + checkAdmin at runtime.
   },
   {
     title: '3. Azure AI Search',

@@ -5,6 +5,7 @@ import { getUserGroups } from '@/lib/auth/getUserGroups';
 import { buildGroupFilter, getSearchClient } from '@/lib/search/secureSearch';
 import { deleteBlob } from '@/lib/storage/blobClient';
 import { auditLog } from '@/lib/audit/logger';
+import { isAppAdmin } from '@/lib/admin/isAppAdmin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -79,32 +80,37 @@ export async function GET(req: NextRequest) {
   const mineOnly = url.searchParams.get('mine') === 'true';
 
   const groups = await getUserGroups(token);
+  const admin = isAppAdmin(groups);
   const aclFilter = buildGroupFilter(groups);
-  if (!aclFilter) {
-    // No groups → nothing visible. Return empty list rather than 403 so the
-    // UI can show a friendly "you don't have access to any documents" state.
+  if (!admin && !aclFilter) {
+    // Non-admin with no groups → nothing visible. Return empty list rather
+    // than 403 so the UI can show a friendly "you don't have access to any
+    // documents" state. Admins skip this entirely — they see every doc.
     return Response.json({ docs: [], groupCount: 0 });
   }
 
-  // Caller's "department admin" status — used for the canDelete decision.
-  // When env GROUP_UPLOADERS_ID is set AND the caller is a member, they
-  // can delete ANY uploaded doc (not just their own). Department admins
-  // moderate user uploads; this matches the upload account's role of
-  // managing documents on behalf of their department.
+  // "Department admin" / uploader-group membership — already lets the
+  // caller delete ANY uploaded doc (not just their own). App admins are
+  // a tenant-wide superset of this.
   const uploadersGroupId = (process.env.GROUP_UPLOADERS_ID || '').trim();
-  const isUploadAdmin = !!uploadersGroupId && groups.includes(uploadersGroupId);
+  const isUploadAdmin = (!!uploadersGroupId && groups.includes(uploadersGroupId)) || admin;
 
-  // The mine filter is ANDed with the ACL filter — uploader_oid alone is NOT
-  // a permission grant. A user must still be in one of the doc's allowedGroups
-  // to see it. This protects the case where a former group member uploaded a
-  // doc, was removed from the group, but their oid is still on the chunk.
-  const filter = mineOnly
-    ? `(${aclFilter}) and uploader_oid eq '${user.oid.replace(/'/g, "''")}'`
-    : aclFilter;
+  // Filter logic:
+  //   admin + mine=false  → no filter at all (sees every doc)
+  //   admin + mine=true   → uploader_oid filter only (their own uploads)
+  //   user + mine=false   → ACL filter only
+  //   user + mine=true    → ACL filter AND uploader_oid filter
+  let filter: string | undefined;
+  if (mineOnly) {
+    const mineExpr = `uploader_oid eq '${user.oid.replace(/'/g, "''")}'`;
+    filter = admin ? mineExpr : `(${aclFilter}) and ${mineExpr}`;
+  } else {
+    filter = admin ? undefined : (aclFilter as string);
+  }
 
   const client = getSearchClient();
   const results = await client.search('*', {
-    filter,
+    ...(filter ? { filter } : {}),
     select: ['id', 'title', 'department', 'sourceUrl', 'allowedGroups', 'uploader_oid'],
     top: 1000
   });
@@ -189,7 +195,11 @@ export async function DELETE(req: NextRequest) {
 
   const groups = await getUserGroups(token);
   const uploadersGroupId = (process.env.GROUP_UPLOADERS_ID || '').trim();
-  const isUploadAdmin = !!uploadersGroupId && groups.includes(uploadersGroupId);
+  // App admins are a tenant-wide superset of department uploaders —
+  // they can delete any uploaded doc regardless of which group it was
+  // shared with.
+  const isUploadAdmin =
+    (!!uploadersGroupId && groups.includes(uploadersGroupId)) || isAppAdmin(groups);
 
   const client = getSearchClient();
 

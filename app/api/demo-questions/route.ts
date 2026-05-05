@@ -5,6 +5,7 @@ import { getUserGroups } from '@/lib/auth/getUserGroups';
 import { buildGroupFilter, getSearchClient } from '@/lib/search/secureSearch';
 import { getAnthropicClient, CLAUDE_MODEL, isAnthropicConfigured } from '@/lib/claude/client';
 import { svcLog } from '@/lib/devLog';
+import { isAppAdmin } from '@/lib/admin/isAppAdmin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -99,11 +100,11 @@ export async function GET(req: NextRequest) {
 
   // ---------- Resolve viewer's groups → ACL filter ----------
   const groups = await getUserGroups(token);
+  const admin = isAppAdmin(groups);
   const aclFilter = buildGroupFilter(groups);
-  if (!aclFilter) {
-    // No groups → nothing to ask about. Return the static fallback so the
-    // UI still has SOMETHING to display, but tag the source so the demo
-    // operator can see this happened.
+  if (!admin && !aclFilter) {
+    // Non-admin with no groups → nothing to ask about. Static fallback.
+    // Admins skip this — they see questions over the whole index.
     return Response.json({
       questions: FALLBACK_QUESTIONS,
       source: 'fallback-no-groups',
@@ -112,7 +113,9 @@ export async function GET(req: NextRequest) {
   }
 
   // ---------- Cache lookup (per group set) ----------
-  const key = cacheKey(groups);
+  // Admins share a single cache slot — their effective doc-set is the
+  // entire tenant, no need to recompute per admin user.
+  const key = admin ? '__admin__' : cacheKey(groups);
   const cached = cache.get(key);
   if (cached && cached.expiresAt > Date.now()) {
     return Response.json({
@@ -125,7 +128,7 @@ export async function GET(req: NextRequest) {
   // ---------- Pull a representative doc list (post-ACL) ----------
   const client = getSearchClient();
   const results = await client.search('*', {
-    filter: aclFilter,
+    ...(admin ? {} : { filter: aclFilter as string }),
     select: ['title', 'department', 'content'],
     // Pull more than MAX_DOCS_FOR_PROMPT chunks to give the dedupe-by-title
     // loop room — many chunks share a title (one source doc → N chunks).
