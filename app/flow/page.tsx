@@ -540,6 +540,90 @@ sample-docs/<dept>/*.md                /api/upload (PDF / DOCX / MD / TXT / HTML
             wired correctly. Sign in as one of your new users in <code>/login</code> — the
             chat header shows their display name.
           </div>
+
+          {/* ----- Demo accounts (result of Steps A + B) -----
+              The four identities the demo expects to find after Setup
+              completes. Lives here (not as its own section) because
+              that's how it relates to the rest of the page: it's the
+              expected outcome of running Steps A and B, not an
+              independent narrative. */}
+          <h3 className="mt-8 text-sm font-semibold uppercase tracking-wide text-slate-500">
+            Demo accounts
+          </h3>
+          <p className="mt-2 text-sm text-slate-600">
+            After running Steps A and B above you should end up with these four identities. Sign in
+            to the chat at <Link href="/login" className="underline hover:text-slate-900"><code>/login</code></Link>{' '}
+            with any of them — same password for all four.
+          </p>
+          <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200 bg-white">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-4 py-2">Account</th>
+                  <th className="px-4 py-2">Sees in chat</th>
+                  <th className="px-4 py-2">Can upload?</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                <tr>
+                  <td className="px-4 py-3 align-top">
+                    <div className="flex items-center">
+                      <code>alice@evilcatkimigmail.onmicrosoft.com</code>
+                      <CopyButton value="alice@evilcatkimigmail.onmicrosoft.com" label="alice email" />
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 align-top text-slate-700">HR docs + Public docs</td>
+                  <td className="px-4 py-3 align-top text-slate-700">No</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-3 align-top">
+                    <div className="flex items-center">
+                      <code>bob@evilcatkimigmail.onmicrosoft.com</code>
+                      <CopyButton value="bob@evilcatkimigmail.onmicrosoft.com" label="bob email" />
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 align-top text-slate-700">Finance docs + Public docs</td>
+                  <td className="px-4 py-3 align-top text-slate-700">No</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-3 align-top">
+                    <div className="flex items-center">
+                      <code>upload@evilcatkimigmail.onmicrosoft.com</code>
+                      <CopyButton value="upload@evilcatkimigmail.onmicrosoft.com" label="upload email" />
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 align-top text-slate-700">All three (HR + Finance + Public)</td>
+                  <td className="px-4 py-3 align-top text-slate-700">Yes — to any group they belong to</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-3 align-top">
+                    <div className="flex items-center">
+                      <code>admin@evilcatkimigmail.onmicrosoft.com</code>
+                      <CopyButton value="admin@evilcatkimigmail.onmicrosoft.com" label="admin email" />
+                    </div>
+                    <div className="mt-1 text-[10px] uppercase tracking-wide text-slate-500">App admin · sees Admin link in chat header</div>
+                  </td>
+                  <td className="px-4 py-3 align-top text-slate-700">
+                    Every doc in the index (ACL filter bypassed)
+                  </td>
+                  <td className="px-4 py-3 align-top text-slate-700">
+                    Yes — any group · plus full user / group CRUD via{' '}
+                    <a href="#section-admin" className="underline hover:text-slate-900">§5</a>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="font-semibold">Password (all four):</span>
+              <code className="font-mono">Hoanganh268*</code>
+              <CopyButton value="Hoanganh268*" label="password" />
+            </div>
+            <div className="mt-2 text-amber-800">
+              Demo-only credentials — rotate or disable after the demo session.
+            </div>
+          </div>
         </section>
 
         {/* ==================================================================
