@@ -40,6 +40,86 @@ interface SourceDoc {
   format?: string;
   /** Original filename as the user uploaded it. Empty for seed docs. */
   originalFilename?: string;
+  /** rule_id → human label, for blur tooltips applied to the doc body. */
+  sensitivityLabels?: Record<string, string>;
+}
+
+/**
+ * Renders streamed assistant text + applied sensitivity rule labels.
+ *
+ * The server stream emits inline blur markers of the form `«b:<ruleId>:<n>»`.
+ * This component:
+ *   1. Splits the streamed text on those markers
+ *   2. Renders the text segments as Markdown (custom `p` keeps them inline
+ *      so blur spans nestle between words instead of breaking onto new lines)
+ *   3. Renders each marker as a `<span class="blur-cell">` with `•` × n
+ *      placeholder chars and a tooltip showing the rule label
+ *
+ * The real value never appears in the DOM — inspecting the span shows only
+ * the bullets, the CSS blurs them visually, and the label tooltip tells
+ * the user why it's hidden.
+ *
+ * Trade-off: markdown formatting that STRADDLES a blur marker (e.g.
+ * `**bold with $50,000 inside**`) will not render as bold across the blur,
+ * because each text segment is markdown-parsed independently. Acceptable
+ * for an inline redaction layer; blurred content is almost always a single
+ * token (number, identifier) within a paragraph.
+ */
+function RedactedMarkdown({
+  content,
+  labels
+}: {
+  content: string;
+  labels: Record<string, string>;
+}) {
+  const BLUR_RE = /«b:([^:»]+):(\d+)»/g;
+  type Segment =
+    | { type: 'text'; value: string }
+    | { type: 'blur'; ruleId: string; length: number };
+  const segments: Segment[] = [];
+  let lastIdx = 0;
+  let m: RegExpExecArray | null;
+  while ((m = BLUR_RE.exec(content)) !== null) {
+    if (m.index > lastIdx) segments.push({ type: 'text', value: content.slice(lastIdx, m.index) });
+    segments.push({ type: 'blur', ruleId: m[1], length: parseInt(m[2], 10) || 6 });
+    lastIdx = m.index + m[0].length;
+  }
+  if (lastIdx < content.length) segments.push({ type: 'text', value: content.slice(lastIdx) });
+
+  // Fast path — no markers in this content, just render as before.
+  if (segments.length <= 1 && segments[0]?.type !== 'blur') {
+    return <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>;
+  }
+
+  // Inline paragraph override so each text segment doesn't generate its
+  // own block-level <p>. Blur spans then sit inline with surrounding text.
+  // Disable code-block + heading wrappers for the same reason — these
+  // would otherwise create block boundaries between text segments.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const inlineComponents: any = {
+    p: ({ children }: { children: React.ReactNode }) => <>{children}</>
+  };
+
+  return (
+    <>
+      {segments.map((s, i) =>
+        s.type === 'text' ? (
+          <ReactMarkdown key={i} remarkPlugins={[remarkGfm]} components={inlineComponents}>
+            {s.value}
+          </ReactMarkdown>
+        ) : (
+          <span
+            key={i}
+            className="blur-cell"
+            title={`Blurred · rule: ${labels[s.ruleId] || 'sensitive'}`}
+            data-rule={s.ruleId}
+          >
+            {'•'.repeat(Math.max(3, Math.min(20, s.length)))}
+          </span>
+        )
+      )}
+    </>
+  );
 }
 
 interface DocSummary {
@@ -122,6 +202,10 @@ export default function ChatPage() {
   const isAuthenticated = useIsAuthenticated();
   const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
+  // rule_id → human label, sent once at the start of each chat stream
+  // when sensitivity rules apply. Used as tooltip on blur spans. Cleared
+  // on new conversation / sign-out alongside other chat state.
+  const [sensitivityLabels, setSensitivityLabels] = useState<Record<string, string>>({});
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [sourceModalId, setSourceModalId] = useState<string | null>(null);
@@ -322,7 +406,12 @@ export default function ChatPage() {
           } catch {
             continue;
           }
-          if (event === 'citations') {
+          if (event === 'rules') {
+            // Merge labels — multi-turn convos accumulate labels from
+            // every rule that has fired at least once, so a blur span
+            // from an earlier turn still tooltips correctly.
+            setSensitivityLabels((prev) => ({ ...prev, ...(data.labels as Record<string, string>) }));
+          } else if (event === 'citations') {
             setMessages((prev) => {
               const copy = prev.slice();
               const last = copy[copy.length - 1];
@@ -503,7 +592,7 @@ export default function ChatPage() {
               ) : (
                 <div className="markdown mt-1 text-sm">
                   {m.content ? (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                    <RedactedMarkdown content={m.content} labels={sensitivityLabels} />
                   ) : (
                     <span className="text-slate-400">{busy && i === messages.length - 1 ? '…' : ''}</span>
                   )}
@@ -750,7 +839,7 @@ function SourceModal({
 
           {doc && (
             <div className="markdown text-sm text-slate-800">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{doc.content}</ReactMarkdown>
+              <RedactedMarkdown content={doc.content} labels={doc.sensitivityLabels || {}} />
             </div>
           )}
         </div>

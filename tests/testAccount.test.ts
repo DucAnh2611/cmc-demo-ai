@@ -462,6 +462,50 @@ describe('test@ — isAppAdmin edge cases', () => {
   });
 });
 
+// ---------- buildSystemPrompt sensitivity hints ----------
+
+describe('test@ — buildSystemPrompt sensitivity hints', () => {
+  it('omits the sensitivity preamble when no hints are supplied', async () => {
+    const { buildSystemPrompt, SYSTEM_PROMPT } = await import('@/lib/claude/client');
+    const sp = buildSystemPrompt({ name: TEST_NAME, sensitivityHints: [] });
+    expect(sp).not.toContain('SENSITIVITY RULES');
+    expect(sp).toContain(SYSTEM_PROMPT);
+  });
+
+  it('emits the preamble with the [REDACTED] convention when hints are present', async () => {
+    const { buildSystemPrompt } = await import('@/lib/claude/client');
+    const sp = buildSystemPrompt({
+      name: TEST_NAME,
+      sensitivityHints: [{ label: 'Salary figures', phrases: ['money', 'salary'] }]
+    });
+    expect(sp).toContain('SENSITIVITY RULES');
+    expect(sp).toContain('Salary figures');
+    expect(sp).toContain('"money"');
+    expect(sp).toContain('[REDACTED]');
+  });
+
+  it('reminds Claude to apply rules semantically (recognise related concepts)', async () => {
+    const { buildSystemPrompt } = await import('@/lib/claude/client');
+    const sp = buildSystemPrompt({
+      name: TEST_NAME,
+      sensitivityHints: [{ label: 'Pool concept', phrases: ['pool'] }]
+    });
+    expect(sp.toLowerCase()).toContain('semantically');
+  });
+
+  it('places the sensitivity preamble BEFORE the user identity preamble', async () => {
+    const { buildSystemPrompt } = await import('@/lib/claude/client');
+    const sp = buildSystemPrompt({
+      name: TEST_NAME,
+      sensitivityHints: [{ label: 'X', phrases: ['x'] }]
+    });
+    const sensIdx = sp.indexOf('SENSITIVITY RULES');
+    const userIdx = sp.indexOf('signed in');
+    expect(sensIdx).toBeGreaterThanOrEqual(0);
+    expect(userIdx).toBeGreaterThan(sensIdx);
+  });
+});
+
 // ---------- buildSystemPrompt edges ----------
 
 describe('test@ — buildSystemPrompt edge cases', () => {

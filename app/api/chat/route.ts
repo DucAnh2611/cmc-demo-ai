@@ -15,24 +15,30 @@ import { sanitizeHistory } from '@/lib/chat/sanitizeHistory';
 import { auditLog } from '@/lib/audit/logger';
 import { svcLog } from '@/lib/devLog';
 import { isAppAdmin } from '@/lib/admin/isAppAdmin';
+import { loadRules } from '@/lib/security/rules';
+import { resolveAll } from '@/lib/security/resolveLevel';
+import { SemanticBlurStream, redactText } from '@/lib/security/redactor';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-type SendFn = (event: string, data: unknown) => void;
 
 /**
  * Synthetic streamed response used when the Anthropic API is unreachable
  * (no key configured, network error, rate limit). Lets us validate the rest
  * of the pipeline — auth → groups → secureSearch → ACL filter → citations —
  * even without Claude. Streams in 80-char pieces so the UI still feels live.
+ *
+ * `sendToken` is the redactor-wrapped emit function from the route handler:
+ * passing chunks of the fallback text through it ensures the sensitive-data
+ * layer applies here too — important because the fallback includes a
+ * preview of each retrieved chunk, which could itself contain sensitive
+ * substrings.
  */
 async function streamFallback(
-  send: SendFn,
+  sendToken: (text: string) => void,
   chunks: RetrievedChunk[],
   question: string,
-  reason: string,
-  previewParts: string[]
+  reason: string
 ): Promise<void> {
   const departments = Array.from(
     new Set(chunks.map((c) => c.department).filter((d): d is string => !!d))
@@ -60,8 +66,7 @@ async function streamFallback(
   const fullText = header + body;
   for (let i = 0; i < fullText.length; i += 80) {
     const piece = fullText.slice(i, i + 80);
-    previewParts.push(piece);
-    send('token', { text: piece });
+    sendToken(piece);
     await new Promise((r) => setTimeout(r, 20));
   }
 }
@@ -200,21 +205,73 @@ export async function POST(req: NextRequest) {
         return ok;
       });
 
-  // Pass all 5 ACL-verified chunks through — per §5.5 of the demo guide
-  // (top 5). The earlier 60%-of-top score filter was tightening citations,
-  // but for short / abstract queries it sometimes left only 1-2 chunks and
-  // Claude would then refuse with "I do not have access" even though the
-  // index had relevant material. Trusting the retrieval ranking gives
-  // consistent answers across phrasings of the same question.
+  // Sensitive-data layer — admin-configured concepts to blur in chat
+  // output. Each rule has a phrase list + optional group filter. A rule
+  // applies (level = "blur") when:
+  //   - caller is not an admin (admins always bypass), AND
+  //   - the rule's groups list is empty (= applies to everyone), OR
+  //     caller is a member of at least one of the listed groups.
+  // For active rules, Claude is told to redact the concept and
+  // semantically related content with the literal token [REDACTED];
+  // the SemanticBlurStream below converts those into blur markers
+  // the client renders as CSS-blurred bars.
+  const sensitivityRules = await loadRules().catch((e) => {
+    console.warn('[chat] sensitivity rule load failed — proceeding with no rules', {
+      error: (e as Error).message
+    });
+    return [];
+  });
+  const resolved = resolveAll(sensitivityRules, {
+    oid: user.oid,
+    groupIds: groups,
+    isAdmin: admin
+  });
+  console.log('[chat] sensitivity context', {
+    userOid: user.oid,
+    upn: user.upn,
+    isAdmin: admin,
+    rulesLoaded: sensitivityRules.length,
+    activeRules: resolved.textRules.map((r) => ({
+      id: r.rule.id,
+      label: r.rule.label,
+      phrases: r.rule.phrases,
+      scope: r.rule.groups.length === 0 ? 'all-groups' : `${r.rule.groups.length} groups`
+    }))
+  });
   const chunks = aclVerified;
 
   const previewParts: string[] = [];
   const encoder = new TextEncoder();
 
+  // One redactor: SemanticBlurStream converts `[REDACTED]` tokens
+  // Claude emits per the sensitivity preamble into `«b:id:n»` markers
+  // the client renders as blurred bars. `previewParts` keeps the
+  // pre-redaction text for the audit log.
+  const redactor = new SemanticBlurStream(resolved.textRules);
+  // Label map so the client can render a tooltip on each blur span without
+  // us repeating the label on every match marker.
+  const ruleLabels: Record<string, string> = {};
+  for (const { rule } of resolved.textRules) {
+    ruleLabels[rule.id] = rule.label;
+  }
+
   const stream = new ReadableStream({
     async start(controller) {
       const send = (event: string, data: unknown) => {
         controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+      };
+
+      // Send the rule label map up front so the client can render
+      // tooltips on blur spans as they arrive. Empty object when no
+      // text rules apply for this caller — no-op on the client.
+      if (Object.keys(ruleLabels).length > 0) {
+        send('rules', { labels: ruleLabels });
+      }
+
+      const sendToken = (text: string) => {
+        previewParts.push(text); // audit captures pre-redaction
+        const safe = redactor.push(text);
+        if (safe) send('token', { text: safe });
       };
 
       // Citations are sent AT THE END (in the finally block) after we know
@@ -231,7 +288,7 @@ export async function POST(req: NextRequest) {
 
       try {
         if (usedFallback) {
-          await streamFallback(send, chunks, message, fallbackReason, previewParts);
+          await streamFallback(sendToken, chunks, message, fallbackReason);
         } else {
           const anthropic = getAnthropicClient();
           const userMsg = buildUserMessage(message, chunks);
@@ -245,9 +302,18 @@ export async function POST(req: NextRequest) {
           const visibleDepartments = Array.from(
             new Set(chunks.map((c) => c.department).filter((d): d is string => !!d))
           );
+          // Sensitivity hints — pass the active concepts into the prompt
+          // so Claude handles them SEMANTICALLY (catches synonyms and
+          // related ideas a literal regex would miss: e.g. phrase "pool"
+          // also suppresses "swimming", "diving", "water sports").
+          const sensitivityHints = resolved.textRules.map(({ rule }) => ({
+            label: rule.label,
+            phrases: rule.phrases
+          }));
           const systemPrompt = buildSystemPrompt({
             name: user.name,
-            departments: visibleDepartments
+            departments: visibleDepartments,
+            sensitivityHints
           });
 
           // Conversation history (validated above) goes BEFORE the new turn.
@@ -278,11 +344,11 @@ export async function POST(req: NextRequest) {
 
           for await (const event of llmStream) {
             if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-              const text = event.delta.text;
-              previewParts.push(text);
-              send('token', { text });
+              sendToken(event.delta.text);
             }
           }
+          const tail = redactor.flush();
+          if (tail) send('token', { text: tail });
           // finalMessage() resolves with usage tokens — log after stream ends.
           const final = await llmStream.finalMessage().catch(() => null);
           svcLog({
@@ -295,17 +361,19 @@ export async function POST(req: NextRequest) {
         send('done', { fallback: usedFallback });
       } catch (e) {
         // Anthropic call failed mid-flight — discard partial output and
-        // stream the fallback instead, so the UI still renders something
-        // useful and the demo can continue.
+        // stream the fallback instead. The fallback emits raw chunk
+        // text without [REDACTED] tokens, so sensitivity rules can't
+        // apply on this path. Acceptable for a dev/emergency fallback.
         previewParts.length = 0;
         try {
           await streamFallback(
-            send,
+            sendToken,
             chunks,
             message,
-            `Claude API error: ${(e as Error).message}`,
-            previewParts
+            `Claude API error: ${(e as Error).message}`
           );
+          const tail = redactor.flush();
+          if (tail) send('token', { text: tail });
           send('done', { fallback: true });
         } catch (e2) {
           send('error', { message: (e2 as Error).message });
@@ -366,7 +434,19 @@ export async function POST(req: NextRequest) {
           }))
         });
 
-        const responsePreview = fullResponse.slice(0, 500);
+        // Aggregate redaction stats per request so the audit row stays
+        // small. One layer, one level — just count how many blur
+        // markers fired and which rules they belonged to.
+        const blurCount = redactor.events.length;
+        const triggeredRuleIds = Array.from(
+          new Set(redactor.events.map((e) => e.ruleId))
+        );
+        const sensitivitySummary =
+          blurCount > 0
+            ? ` · sensitivity: blurs=${blurCount}, rules=[${triggeredRuleIds.join(',')}]`
+            : '';
+
+        const responsePreview = fullResponse.slice(0, 500) + sensitivitySummary;
         await auditLog({
           userId: user.oid,
           upn: user.upn,

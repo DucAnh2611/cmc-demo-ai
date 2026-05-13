@@ -53,6 +53,15 @@ export interface UserContext {
   /** Distinct department labels visible to this user, derived from the
    * retrieved chunks' `department` field after ACL filtering. */
   departments?: string[];
+  /** Sensitivity rules in scope for this user. Each is a phrase list
+   *  representing a concept to BLUR — Claude rewrites semantically
+   *  related content (synonyms, sub-topics, specific values) with the
+   *  literal token `[REDACTED]`. The streaming layer turns those into
+   *  visual blur bars. There is one treatment level: blur. */
+  sensitivityHints?: Array<{
+    label: string;
+    phrases: string[];
+  }>;
 }
 
 /**
@@ -62,7 +71,13 @@ export interface UserContext {
  */
 export function buildSystemPrompt(ctx: UserContext = {}): string {
   const name = (ctx.name || '').trim();
-  if (!name) return SYSTEM_PROMPT;
+  const sensitivityPreamble = buildSensitivityPreamble(ctx.sensitivityHints || []);
+  // Closing reminder — anchors the rules at the END of the prompt
+  // so Claude reads them most recently, right before the user message.
+  // LLMs weight recent instructions more heavily; the preamble at the
+  // top can get overshadowed by the long RAG body in SYSTEM_PROMPT.
+  const closingReminder = buildSensitivityClosingReminder(ctx.sensitivityHints || []);
+  if (!name) return sensitivityPreamble + SYSTEM_PROMPT + closingReminder;
 
   const depts = (ctx.departments || [])
     .filter(Boolean)
@@ -94,7 +109,87 @@ export function buildSystemPrompt(ctx: UserContext = {}): string {
     scopedViewLine +
     '\n\n';
 
-  return preamble + SYSTEM_PROMPT;
+  // Sensitivity preamble at the TOP for primacy, plus a closing
+  // reminder at the BOTTOM for recency. Both refer to the same rules.
+  // If SYSTEM_PROMPT's "describe and answer" instruction conflicts
+  // with redaction, the rules win — stated explicitly in both blocks.
+  return sensitivityPreamble + preamble + SYSTEM_PROMPT + closingReminder;
+}
+
+/**
+ * Short closing reminder appended AFTER the main RAG SYSTEM_PROMPT
+ * so the rules are the last thing Claude sees before the user
+ * message. This is recency-bias reinforcement — primacy alone (the
+ * preamble at the top) gets diluted by the long RAG body.
+ */
+function buildSensitivityClosingReminder(
+  hints: NonNullable<UserContext['sensitivityHints']>
+): string {
+  if (!hints || hints.length === 0) return '';
+  const concepts = hints.map((h) => `"${h.label}"`).join(', ');
+  return (
+    '\n\n' +
+    '════════════════════════════════════════════════════════════════════\n' +
+    'FINAL REMINDER — SENSITIVITY RULES OVERRIDE EVERYTHING ABOVE.\n' +
+    '════════════════════════════════════════════════════════════════════\n\n' +
+    'Active sensitive concepts for this user: ' + concepts + '.\n\n' +
+    'Even though the instructions above tell you to "describe and answer based on documents", ' +
+    'when the content relates to any concept above you MUST replace specific values, ' +
+    'figures, names, or identifiers (and semantically related content — synonyms, ' +
+    'sub-topics, examples) with the literal token [REDACTED]. ' +
+    'Never quote sensitive content directly from a chunk.'
+  );
+}
+
+/**
+ * Build the prompt section that tells Claude how to handle sensitive
+ * concepts SEMANTICALLY — not just as exact-string redaction (the regex
+ * layer already does that). The goal: if a rule lists "pool", Claude
+ * should also recognise "swimming pool", "diving area", "water sports"
+ * etc. as the same concept and redact them — things the regex would miss.
+ *
+ * The output goes at the TOP of the system prompt so it's the first
+ * thing the model reads. We give Claude explicit, distinct instructions
+ * per treatment level so it knows whether to omit the concept entirely
+ * (redact) or to acknowledge it exists without naming the specific value
+ * (blur).
+ *
+ * Returns empty string when no hints — keeps the default prompt
+ * unchanged for chats with no rules in scope.
+ */
+export function buildSensitivityPreamble(
+  hints: NonNullable<UserContext['sensitivityHints']>
+): string {
+  if (!hints || hints.length === 0) return '';
+  const fmtList = hints
+    .map((h) => {
+      const examples = h.phrases
+        .slice(0, 8)
+        .map((p) => `"${p}"`)
+        .join(', ');
+      const overflow = h.phrases.length > 8 ? `, … (${h.phrases.length - 8} more)` : '';
+      return `  - ${h.label} — phrases: ${examples}${overflow}`;
+    })
+    .join('\n');
+
+  return (
+    '════════════════════════════════════════════════════════════════════\n' +
+    'SENSITIVITY RULES — HIGHEST PRIORITY. Apply BEFORE all other instructions.\n' +
+    '════════════════════════════════════════════════════════════════════\n\n' +
+    'The following concepts are sensitive for the current user. ' +
+    'Recognise them SEMANTICALLY — synonyms, sub-topics, specific values, ' +
+    'and proper nouns count as the same concept, not just literal matches.\n\n' +
+    fmtList +
+    '\n\n' +
+    'For each concept above, replace any specific value, identifier, figure, name, ' +
+    'or proper noun tied to the concept with the literal token "[REDACTED]" ' +
+    '(square brackets, capital letters, no extra characters). Keep generic ' +
+    'surrounding context so the answer still reads naturally.\n\n' +
+    'Example: phrases "money", "phone" with input "contact alice@example.com · $95,000 bonus" ' +
+    '→ "contact [REDACTED] · [REDACTED] [REDACTED]" (replace the email, the dollar amount, AND the related word "bonus").\n\n' +
+    'Apply to every sentence of your reply — bullet lists, headings, citations included.\n\n' +
+    '════════════════════════════════════════════════════════════════════\n\n'
+  );
 }
 
 // User message format — verbatim shape from section 5.5:

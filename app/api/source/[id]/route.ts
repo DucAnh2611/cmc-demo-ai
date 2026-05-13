@@ -4,6 +4,9 @@ import { verifyAccessToken } from '@/lib/auth/verifyToken';
 import { getUserGroups } from '@/lib/auth/getUserGroups';
 import { buildGroupFilter, getSearchClient } from '@/lib/search/secureSearch';
 import { isAppAdmin } from '@/lib/admin/isAppAdmin';
+import { loadRules } from '@/lib/security/rules';
+import { resolveAll } from '@/lib/security/resolveLevel';
+import { redactText } from '@/lib/security/redactor';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -24,8 +27,9 @@ export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
   if (!m) return new Response('Missing bearer token', { status: 401 });
   const token = m[1];
 
+  let user;
   try {
-    await verifyAccessToken(token);
+    user = await verifyAccessToken(token);
   } catch (e) {
     return new Response(`Invalid token: ${(e as Error).message}`, { status: 401 });
   }
@@ -70,14 +74,34 @@ export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
       const extMatch = /\.([a-zA-Z0-9]+)$/.exec(originalFilename || base);
       format = extMatch ? extMatch[1].toUpperCase() : 'FILE';
     }
+
+    // Apply the same sensitivity rules the chat path uses — otherwise a
+    // user could click a citation and read the unredacted text that was
+    // blurred in chat. Same `«b:id:n»` markers; client renders identically.
+    // Build a labels map for the client tooltip.
+    let content = d.content;
+    const labels: Record<string, string> = {};
+    try {
+      const rules = await loadRules();
+      const resolved = resolveAll(rules, { oid: user.oid, groupIds: groups, isAdmin: admin });
+      for (const { rule } of resolved.textRules) labels[rule.id] = rule.label;
+      const result = redactText(content, resolved.textRules);
+      content = result.text;
+    } catch (e) {
+      console.warn('[source] sensitivity redaction failed — returning raw', {
+        error: (e as Error).message
+      });
+    }
+
     return Response.json({
       id: d.id,
       title: d.title,
       department: d.department,
       sourceUrl: d.sourceUrl,
-      content: d.content,
+      content,
       format,
-      originalFilename
+      originalFilename,
+      sensitivityLabels: labels
     });
   }
 

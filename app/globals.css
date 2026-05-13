@@ -37,3 +37,59 @@ body {
 .markdown.on-dark code { @apply bg-slate-700 text-slate-100; }
 .markdown.on-dark pre { @apply bg-slate-800 text-slate-100; }
 .markdown.on-dark a { @apply text-blue-300; }
+
+/* Sensitive-data blur — the server emits `«b:id:n»` markers which the
+ * client replaces with this span. Real value never reaches the DOM.
+ *
+ * Visual: a smoky gradient block of approximately the redacted text's
+ * width, with the placeholder glyphs rendered transparent so the user
+ * sees a blurred-content shape rather than readable bullets. The
+ * underlying placeholder still controls the bar's WIDTH (so each blur
+ * span is sized like the original text), but only the gradient + blur
+ * filter are visually salient. Reads as "something's here, you can't
+ * see it" — no reading required. */
+.blur-cell {
+  display: inline-block;
+  vertical-align: baseline;
+  background: linear-gradient(
+    90deg,
+    rgba(71, 85, 105, 0.35) 0%,
+    rgba(71, 85, 105, 0.55) 30%,
+    rgba(71, 85, 105, 0.4) 60%,
+    rgba(71, 85, 105, 0.55) 100%
+  );
+  color: transparent;
+  filter: blur(3px);
+  border-radius: 3px;
+  padding: 1px 4px;
+  cursor: help;
+  user-select: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.blur-cell:hover {
+  filter: blur(2px);
+}
+
+/* Chunk-dropped preview (admin live tester only) — same visual idea,
+ * but red-tinted so the admin instantly recognises this case is "the
+ * whole chunk is gone" rather than "some words are hidden". The text
+ * inside is the ORIGINAL sample, kept for sizing but rendered
+ * transparent + blurred so it can't be read. */
+.chunk-dropped {
+  display: block;
+  background: linear-gradient(
+    90deg,
+    rgba(239, 68, 68, 0.18) 0%,
+    rgba(239, 68, 68, 0.38) 50%,
+    rgba(239, 68, 68, 0.18) 100%
+  );
+  color: transparent;
+  filter: blur(4px);
+  border-radius: 4px;
+  padding: 6px 10px;
+  user-select: none;
+  white-space: pre-wrap;
+}
+.chunk-dropped:hover {
+  filter: blur(2.5px);
+}

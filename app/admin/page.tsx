@@ -43,7 +43,23 @@ interface AdminGroup {
   isUploadersGroup?: boolean;
 }
 
-type AdminTab = 'users' | 'groups';
+type AdminTab = 'users' | 'groups' | 'rules';
+
+// Mirrors lib/security/rules.ts. One treatment level (blur) and an
+// optional group scope — that's the entire model.
+interface SensitivityRule {
+  id: string;
+  label: string;
+  /** Phrases to redact. Claude treats each as a concept (semantic
+   *  match), not a literal regex. */
+  phrases: string[];
+  /** Group IDs the rule applies to. Empty = applies to everyone. */
+  groups: string[];
+  enabled: boolean;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
 // =====================================================================
 // Page shell
@@ -102,12 +118,16 @@ export default function AdminPage() {
           <TabButton active={tab === 'groups'} onClick={() => setTab('groups')}>
             Groups
           </TabButton>
+          <TabButton active={tab === 'rules'} onClick={() => setTab('rules')}>
+            Rules
+          </TabButton>
         </div>
       </header>
 
       <div className="mx-auto max-w-6xl px-6 py-6">
         {tab === 'users' && <UsersTab acquireToken={acquireToken} />}
         {tab === 'groups' && <GroupsTab acquireToken={acquireToken} />}
+        {tab === 'rules' && <RulesTab acquireToken={acquireToken} />}
       </div>
     </main>
   );
@@ -2304,6 +2324,724 @@ function AddMemberPicker({
           )}
         </ul>
       )}
+    </div>
+  );
+}
+
+// =====================================================================
+// RULES TAB — sensitive-data rule management
+// =====================================================================
+//
+// A rule is `(phrases[], groups[])`. Treatment is always BLUR — matched
+// concepts (and semantically related content per Claude's read) appear
+// as visually-blurred bars in the chat. Admins always bypass.
+//
+// Scope:
+//   - `groups: []` -> applies to everyone (default)
+//   - `groups: [g1, g2, ...]` -> applies only to members of these groups
+// =====================================================================
+
+/** Renders a chat/preview text string with `«b:<ruleId>:<n>»` blur
+ *  markers turned into CSS-blurred bullet spans. */
+function RenderRedacted({ text, label }: { text: string; label?: string }) {
+  const BLUR_RE = /«b:([^:»]+):(\d+)»/g;
+  const parts: React.ReactNode[] = [];
+  let lastIdx = 0;
+  let m: RegExpExecArray | null;
+  let key = 0;
+  while ((m = BLUR_RE.exec(text)) !== null) {
+    if (m.index > lastIdx) parts.push(text.slice(lastIdx, m.index));
+    const n = parseInt(m[2], 10) || 6;
+    parts.push(
+      <span
+        key={`b${key++}`}
+        className="blur-cell"
+        title={label ? `Blurred · rule: ${label}` : 'Blurred preview'}
+      >
+        {'•'.repeat(Math.max(3, Math.min(20, n)))}
+      </span>
+    );
+    lastIdx = m.index + m[0].length;
+  }
+  if (lastIdx < text.length) parts.push(text.slice(lastIdx));
+  return <>{parts}</>;
+}
+
+function RulesTab({ acquireToken }: { acquireToken: () => Promise<string> }) {
+  const [rules, setRules] = useState<SensitivityRule[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<SensitivityRule | 'new' | null>(null);
+  const [refetchKey, setRefetchKey] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const token = await acquireToken();
+        const res = await fetch('/api/admin/rules', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (cancelled) return;
+        if (!res.ok) {
+          setError(`${res.status} ${(await res.text()).slice(0, 300)}`);
+        } else {
+          const data = (await res.json()) as { rules: SensitivityRule[] };
+          setRules(data.rules);
+          setError(null);
+        }
+      } catch (e) {
+        if (!cancelled) setError((e as Error).message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [acquireToken, refetchKey]);
+
+  const toggleEnabled = async (rule: SensitivityRule) => {
+    try {
+      const token = await acquireToken();
+      const res = await fetch(`/api/admin/rules/${encodeURIComponent(rule.id)}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: !rule.enabled })
+      });
+      if (!res.ok) {
+        setError(`${res.status} ${(await res.text()).slice(0, 300)}`);
+        return;
+      }
+      setRefetchKey((k) => k + 1);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const handleDelete = async (rule: SensitivityRule) => {
+    if (!confirm(`Delete rule "${rule.label}"? This cannot be undone.`)) return;
+    try {
+      const token = await acquireToken();
+      const res = await fetch(`/api/admin/rules/${encodeURIComponent(rule.id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) {
+        setError(`${res.status} ${(await res.text()).slice(0, 300)}`);
+        return;
+      }
+      setRefetchKey((k) => k + 1);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900">Sensitive-data rules</h2>
+          <p className="mt-1 max-w-2xl text-xs text-slate-500">
+            Each rule lists phrases that mark a sensitive concept. Claude redacts the
+            concept and semantically related content (e.g. &ldquo;money&rdquo; covers
+            $95,000 + bonus + salary) in chat output. Scope to specific groups or leave
+            empty to apply to everyone. Admins always bypass.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setRefetchKey((k) => k + 1)}
+            disabled={loading}
+            className="rounded-md border border-slate-300 px-2 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+            title="Re-fetch from blob storage"
+            aria-label="Refresh rules"
+          >
+            {loading ? '…' : '↻'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setEditing('new')}
+            className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+          >
+            + New rule
+          </button>
+        </div>
+      </div>
+
+      {loading && <div className="mt-3 text-sm text-slate-500">Loading rules…</div>}
+      {error && (
+        <div className="mt-3">
+          <ErrorBanner message={error} />
+        </div>
+      )}
+
+      {rules && rules.length === 0 && !loading && (
+        <div className="mt-4 rounded-md border border-slate-200 bg-white p-6 text-sm text-slate-600">
+          <p className="font-medium">No rules yet.</p>
+          <p className="mt-1 text-xs text-slate-500">
+            Create a rule with one or more phrases to start blurring sensitive content in chat.
+          </p>
+        </div>
+      )}
+
+      {rules && rules.length > 0 && (
+        <ul className="mt-4 divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+          {rules.map((r) => (
+            <li key={r.id} className="flex items-stretch hover:bg-slate-50">
+              <button
+                type="button"
+                onClick={() => setEditing(r)}
+                className="flex-1 px-4 py-3 text-left"
+              >
+                <div className="flex items-center gap-2">
+                  <span className={`font-medium ${r.enabled ? 'text-slate-900' : 'text-slate-400 line-through'}`}>
+                    {r.label}
+                  </span>
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-600">
+                    {r.groups.length === 0 ? 'all groups' : `${r.groups.length} group${r.groups.length === 1 ? '' : 's'}`}
+                  </span>
+                  {!r.enabled && (
+                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-500">
+                      Disabled
+                    </span>
+                  )}
+                </div>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {r.phrases.slice(0, 6).map((p, i) => (
+                    <span
+                      key={i}
+                      className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[10px] text-slate-700"
+                      title={p}
+                    >
+                      {p.length > 30 ? `${p.slice(0, 30)}…` : p}
+                    </span>
+                  ))}
+                  {r.phrases.length > 6 && (
+                    <span className="text-[10px] text-slate-400">+{r.phrases.length - 6} more</span>
+                  )}
+                </div>
+                <div className="mt-0.5 text-[10px] text-slate-400">id: {r.id.slice(0, 8)}</div>
+              </button>
+              <div className="flex items-center gap-1 px-2">
+                <button
+                  type="button"
+                  onClick={() => toggleEnabled(r)}
+                  className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                  title={r.enabled ? 'Disable rule' : 'Enable rule'}
+                >
+                  {r.enabled ? '⏸' : '▶'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDelete(r)}
+                  className="rounded p-1 text-red-500 hover:bg-red-50 hover:text-red-700"
+                  title="Delete rule"
+                >
+                  🗑
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {editing && (
+        <RuleEditor
+          rule={editing === 'new' ? null : editing}
+          acquireToken={acquireToken}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            setRefetchKey((k) => k + 1);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------- Rule editor modal ----------
+
+function RuleEditor({
+  rule,
+  acquireToken,
+  onClose,
+  onSaved
+}: {
+  rule: SensitivityRule | null;
+  acquireToken: () => Promise<string>;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const isNew = rule === null;
+  const [label, setLabel] = useState(rule?.label || '');
+  const [phrases, setPhrases] = useState<string[]>(rule?.phrases || ['']);
+  const [groups, setGroups] = useState<string[]>(rule?.groups || []);
+  const [enabled, setEnabled] = useState(rule?.enabled !== false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [allGroups, setAllGroups] = useState<AdminGroup[]>([]);
+  const [showGroupPicker, setShowGroupPicker] = useState(false);
+
+  const [sampleText, setSampleText] = useState(
+    'Acme Corporation Q3 results · contact alice@example.com · $95,000 bonus pool.'
+  );
+  const [testResult, setTestResult] = useState<{
+    rendered: string;
+    semanticAttempted?: boolean;
+    semanticError?: string | null;
+    explanation: string;
+  } | null>(null);
+  const [testing, setTesting] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await acquireToken();
+        const res = await fetch('/api/admin/groups', { headers: { Authorization: `Bearer ${token}` } });
+        if (cancelled || !res.ok) return;
+        const data = (await res.json()) as { groups: AdminGroup[] };
+        setAllGroups(data.groups);
+      } catch {
+        /* picker degrades to empty list */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [acquireToken]);
+
+  const handleSave = async () => {
+    if (busy) return;
+    const cleanPhrases = Array.from(new Set(phrases.map((p) => p.trim()).filter((p) => p.length > 0)));
+    if (cleanPhrases.length === 0) {
+      setError('Add at least one phrase.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const token = await acquireToken();
+      const body = { label, phrases: cleanPhrases, groups, enabled };
+      const res = await fetch(
+        isNew ? '/api/admin/rules' : `/api/admin/rules/${encodeURIComponent(rule!.id)}`,
+        {
+          method: isNew ? 'POST' : 'PATCH',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        }
+      );
+      if (!res.ok) {
+        setError(`${res.status} ${(await res.text()).slice(0, 300)}`);
+        return;
+      }
+      onSaved();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleTest = async () => {
+    if (testing) return;
+    setTesting(true);
+    try {
+      const token = await acquireToken();
+      const cleanPhrases = Array.from(
+        new Set(phrases.map((p) => p.trim()).filter((p) => p.length > 0))
+      );
+      const res = await fetch('/api/admin/rules/test', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rule: { label, phrases: cleanPhrases, groups, enabled },
+          sampleText
+        })
+      });
+      if (!res.ok) {
+        setTestResult({
+          rendered: '',
+          explanation: `Error: ${res.status} ${(await res.text()).slice(0, 200)}`
+        });
+        return;
+      }
+      setTestResult(await res.json());
+    } catch (e) {
+      setTestResult({ rendered: '', explanation: `Error: ${(e as Error).message}` });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const updatePhrase = (idx: number, value: string) =>
+    setPhrases((prev) => prev.map((p, i) => (i === idx ? value : p)));
+  const addPhrase = () => setPhrases((prev) => [...prev, '']);
+  const removePhrase = (idx: number) =>
+    setPhrases((prev) => (prev.length === 1 ? [''] : prev.filter((_, i) => i !== idx)));
+
+  const removeGroup = (gid: string) => setGroups((prev) => prev.filter((g) => g !== gid));
+  const addGroups = (ids: string[]) => {
+    setGroups((prev) => Array.from(new Set([...prev, ...ids])));
+  };
+
+  const groupById = (gid: string) => allGroups.find((g) => g.id === gid);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4">
+      <div className="my-8 w-full max-w-4xl rounded-xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-4 border-b px-6 pt-5 pb-3">
+          <div>
+            <h3 className="text-base font-semibold text-slate-900">
+              {isNew ? 'New sensitivity rule' : `Edit · ${rule!.label}`}
+            </h3>
+            <p className="mt-1 text-xs text-slate-500">
+              Define phrases that mark a sensitive concept. Pick which groups it
+              applies to (or leave empty for everyone). Matches in chat output
+              are blurred.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md px-2 py-1 text-sm text-slate-500 hover:bg-slate-100"
+            aria-label="Close"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 gap-6 px-6 py-5 md:grid-cols-2">
+          <div className="space-y-4">
+            <FormField label="Label">
+              <input
+                type="text"
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                placeholder="e.g. Compensation figures"
+                className="block w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:border-slate-500 focus:outline-none"
+              />
+            </FormField>
+
+            <div>
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Phrases ({phrases.filter((p) => p.trim()).length})
+                </label>
+                <button
+                  type="button"
+                  onClick={addPhrase}
+                  className="rounded-md border border-slate-300 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+                >
+                  + Add phrase
+                </button>
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Each phrase is a concept Claude treats semantically — synonyms,
+                related ideas, and specific values are caught too.
+              </p>
+              <ul className="mt-2 space-y-2">
+                {phrases.map((p, i) => (
+                  <li key={i} className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={p}
+                      onChange={(e) => updatePhrase(i, e.target.value)}
+                      placeholder="e.g. salary"
+                      className="flex-1 rounded-md border border-slate-300 px-2 py-1 font-mono text-xs focus:border-slate-500 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removePhrase(i)}
+                      className="rounded p-1 text-red-500 hover:bg-red-50 hover:text-red-700"
+                      title="Remove phrase"
+                    >
+                      ✕
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Applies to ({groups.length === 0 ? 'all groups' : `${groups.length} group${groups.length === 1 ? '' : 's'}`})
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowGroupPicker(true)}
+                  className="rounded-md border border-slate-300 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+                >
+                  + Add groups
+                </button>
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Leave empty to apply to everyone (except admins). Otherwise the rule
+                fires only for members of the listed groups.
+              </p>
+              {groups.length === 0 ? (
+                <div className="mt-2 rounded-md border border-dashed border-slate-300 p-2 text-center text-[11px] text-slate-400">
+                  No group restrictions — applies to all signed-in users.
+                </div>
+              ) : (
+                <ul className="mt-2 space-y-1">
+                  {groups.map((gid) => {
+                    const g = groupById(gid);
+                    return (
+                      <li
+                        key={gid}
+                        className="flex items-center gap-2 rounded border border-slate-200 bg-slate-50 px-2 py-1"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-xs font-medium text-slate-900">
+                            {g ? g.displayName : `Unknown · ${gid.slice(0, 8)}…`}
+                          </div>
+                          {g?.description && (
+                            <div className="truncate text-[10px] text-slate-500">{g.description}</div>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeGroup(gid)}
+                          className="rounded p-1 text-red-500 hover:bg-red-50 hover:text-red-700"
+                          title="Remove"
+                        >
+                          ✕
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+
+            <label className="flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={enabled}
+                onChange={(e) => setEnabled(e.target.checked)}
+                className="h-4 w-4"
+              />
+              Enabled
+            </label>
+          </div>
+
+          <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-4">
+            <div>
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Live test</h4>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Preview what an applicable user would see. The rule is not saved.
+              </p>
+            </div>
+            <FormField label="Sample text">
+              <textarea
+                value={sampleText}
+                onChange={(e) => setSampleText(e.target.value)}
+                rows={4}
+                className="block w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:border-slate-500 focus:outline-none"
+              />
+            </FormField>
+            <button
+              type="button"
+              onClick={handleTest}
+              disabled={testing || phrases.every((p) => !p.trim())}
+              className="w-full rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+            >
+              {testing ? 'Testing…' : 'Run test'}
+            </button>
+
+            {testResult && (
+              <div className="space-y-2 rounded-md border border-slate-200 bg-white p-3 text-xs">
+                <div className="text-[11px] text-slate-600">{testResult.explanation}</div>
+                {testResult.semanticError && (
+                  <div className="text-[10px] text-red-600" title={testResult.semanticError}>
+                    ⚠ Claude error — fell back to regex
+                  </div>
+                )}
+                {testResult.rendered && (
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                      Rendered output:
+                    </div>
+                    <div className="mt-1 whitespace-pre-wrap rounded bg-slate-50 p-2 text-[11px] text-slate-800">
+                      <RenderRedacted text={testResult.rendered} label={label || 'preview'} />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {error && (
+          <div className="mx-6 mb-2 rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800">
+            {error}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 border-t bg-slate-50 px-6 py-3">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={busy || !label || phrases.every((p) => !p.trim())}
+            className="rounded-md bg-slate-900 px-4 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+          >
+            {busy ? 'Saving…' : isNew ? 'Create rule' : 'Save changes'}
+          </button>
+        </div>
+      </div>
+
+      {showGroupPicker && (
+        <GroupPickerModal
+          items={allGroups.map((g) => ({
+            id: g.id,
+            primary: g.displayName,
+            secondary: g.description || '',
+            disabled: groups.includes(g.id)
+          }))}
+          onCancel={() => setShowGroupPicker(false)}
+          onAdd={(ids) => {
+            addGroups(ids);
+            setShowGroupPicker(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// =====================================================================
+// GroupPickerModal — multi-select for the rule editor's group scope.
+// =====================================================================
+
+interface GroupPickerItem {
+  id: string;
+  primary: string;
+  secondary?: string;
+  disabled?: boolean;
+}
+
+function GroupPickerModal({
+  items,
+  onCancel,
+  onAdd
+}: {
+  items: GroupPickerItem[];
+  onCancel: () => void;
+  onAdd: (ids: string[]) => void;
+}) {
+  const [filter, setFilter] = useState('');
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter(
+      (i) =>
+        i.primary.toLowerCase().includes(q) || (i.secondary || '').toLowerCase().includes(q)
+    );
+  }, [items, filter]);
+
+  const toggle = (id: string) => {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/40 p-4">
+      <div
+        className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-xl bg-white shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="border-b px-5 pt-4 pb-3">
+          <h4 className="text-sm font-semibold text-slate-900">Add groups</h4>
+          <p className="mt-1 text-[11px] text-slate-500">
+            Pick one or more groups the rule should apply to.
+          </p>
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Search…"
+            autoFocus
+            className="mt-3 block w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:border-slate-500 focus:outline-none"
+          />
+        </div>
+        <div className="flex-1 overflow-y-auto px-2 py-2">
+          {filtered.length === 0 ? (
+            <div className="px-3 py-4 text-center text-xs text-slate-400">No matches.</div>
+          ) : (
+            <ul className="space-y-0.5">
+              {filtered.map((it) => {
+                const isPicked = picked.has(it.id);
+                return (
+                  <li key={it.id}>
+                    <label
+                      className={`flex items-center gap-2 rounded px-2 py-1.5 text-sm ${
+                        it.disabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer hover:bg-slate-50'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isPicked}
+                        disabled={it.disabled}
+                        onChange={() => toggle(it.id)}
+                        className="h-4 w-4"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium text-slate-900">{it.primary}</div>
+                        {it.secondary && (
+                          <div className="truncate text-[10px] text-slate-500">{it.secondary}</div>
+                        )}
+                      </div>
+                      {it.disabled && (
+                        <span className="text-[10px] uppercase tracking-wide text-slate-400">
+                          already added
+                        </span>
+                      )}
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+        <div className="flex justify-end gap-2 border-t bg-slate-50 px-5 py-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={picked.size === 0}
+            onClick={() => onAdd(Array.from(picked))}
+            className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+          >
+            Add {picked.size > 0 ? `${picked.size} ` : ''}group{picked.size === 1 ? '' : 's'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
