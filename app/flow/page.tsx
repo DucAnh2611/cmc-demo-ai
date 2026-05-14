@@ -74,9 +74,10 @@ export default function FlowPage() {
         <header className="mt-6">
           <h1 className="text-3xl font-semibold text-slate-900">Security &amp; document flow</h1>
           <p className="mt-2 text-sm text-slate-600">
-            Six sections: how a request travels through the system, what each piece of tech does,
+            Seven sections: how a request travels through the system, what each piece of tech does,
             how to provision identity in Entra ID, how documents get into the system (seed + upload),
-            how to manage users in-app, and how Azure resources fit together.
+            how to manage users in-app, how sensitive data is blurred at the LLM layer, and how
+            Azure resources fit together.
           </p>
         </header>
 
@@ -93,7 +94,8 @@ export default function FlowPage() {
           <a href="#section-setup" className="rounded-full border border-slate-300 bg-white px-3 py-1 text-slate-700 hover:bg-slate-100">3 · Setup</a>
           <a href="#section-upload" className="rounded-full border border-slate-300 bg-white px-3 py-1 text-slate-700 hover:bg-slate-100">4 · Upload</a>
           <a href="#section-admin" className="rounded-full border border-slate-300 bg-white px-3 py-1 text-slate-700 hover:bg-slate-100">5 · Admin</a>
-          <a href="#section-azure" className="rounded-full border border-slate-300 bg-white px-3 py-1 text-slate-700 hover:bg-slate-100">6 · Azure</a>
+          <a href="#section-sensitivity" className="rounded-full border border-slate-300 bg-white px-3 py-1 text-slate-700 hover:bg-slate-100">6 · Sensitivity</a>
+          <a href="#section-azure" className="rounded-full border border-slate-300 bg-white px-3 py-1 text-slate-700 hover:bg-slate-100">7 · Azure</a>
         </nav>
 
         {/* ==================================================================
@@ -902,13 +904,14 @@ sample-docs/<dept>/*.md                /api/upload (PDF / DOCX / MD / TXT / HTML
           </h3>
           <p className="mt-1 text-sm text-slate-600">
             Every admin action writes a structured row to Application Insights with a distinct
-            event prefix so the KQL view at §<a href="#section-azure" className="underline hover:text-slate-900">6</a>
+            event prefix so the KQL view at §<a href="#section-azure" className="underline hover:text-slate-900">7</a>
             picks it up alongside chat / upload events:
           </p>
           <ul className="mt-2 list-disc space-y-0.5 pl-5 text-xs font-mono text-slate-700">
             <li>[admin:create-user] / [admin:update-user] / [admin:delete-user] / [admin:reset-password]</li>
             <li>[admin:create-group] / [admin:update-group] / [admin:delete-group]</li>
             <li>[admin:add-member] / [admin:remove-member]</li>
+            <li>[admin:create-rule] / [admin:update-rule] / [admin:delete-rule]</li>
           </ul>
           <p className="mt-2 text-xs text-slate-500">
             Password values are NEVER written to the audit row — only the fact that a reset
@@ -917,10 +920,230 @@ sample-docs/<dept>/*.md                /api/upload (PDF / DOCX / MD / TXT / HTML
         </section>
 
         {/* ==================================================================
-            SECTION 6 — AZURE
+            SECTION 6 — SENSITIVITY — concept-level redaction at the LLM layer.
+            Promoted from a subsection of Admin to a top-level section so it
+            surfaces in the sticky nav: this is a distinct security control
+            on top of the ACL filter and deserves its own outline entry.
+            ================================================================== */}
+        <section id="section-sensitivity" className="mt-14 scroll-mt-20">
+          <h2 className="text-xl font-semibold text-slate-900">6 · Sensitivity — concept-level redaction</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            On top of the ACL filter that decides <em>which docs</em> a user can read, this layer
+            redacts <em>specific concepts</em> from the chat answer itself. The aim is
+            concept-level, not keyword-level: phrase <code>money</code> covers <em>$95,000</em>,{' '}
+            <em>bonus</em>, <em>salary</em>, <em>compensation</em>. Rules are managed in the{' '}
+            <strong>Rules</strong> tab of <Link href="/admin" className="underline hover:text-slate-900"><code>/admin</code></Link>.
+          </p>
+
+          {/* Rule shape */}
+          <h3 className="mt-6 text-sm font-semibold uppercase tracking-wide text-slate-500">
+            What a rule looks like
+          </h3>
+          <div className="mt-2 rounded-lg border border-slate-200 bg-white p-4">
+            <ul className="space-y-2 text-sm text-slate-700">
+              <li>
+                <strong>Label</strong> — human name (e.g. <em>Compensation figures</em>). Shows in
+                the tooltip on each blur bar.
+              </li>
+              <li>
+                <strong>Phrases</strong> — one or more concept words. Claude interprets each as a
+                concept, NOT a literal regex, and redacts semantically related content.
+              </li>
+              <li>
+                <strong>Applies to</strong> — list of Entra group IDs the rule fires for. Leave
+                empty (<em>&ldquo;all groups&rdquo;</em>) to apply to every signed-in user. Pick
+                specific groups to scope the rule to those members only.
+              </li>
+              <li>
+                <strong>Enabled</strong> — toggle. Disabled rules are stored but ignored at chat
+                time. The list view also has a one-click pause/play button.
+              </li>
+            </ul>
+            <p className="mt-3 text-xs text-slate-500">
+              Storage: one JSON blob at <code>uploads/rules/sensitivity.json</code> in the same
+              Azure Storage container as uploads, cached in-process for 60 seconds. Admin
+              mutations invalidate the cache so the next chat sees fresh rules.
+            </p>
+          </div>
+
+          {/* Resolver */}
+          <h3 className="mt-8 text-sm font-semibold uppercase tracking-wide text-slate-500">
+            When does a rule apply?
+          </h3>
+          <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-slate-700">
+            <li>
+              <strong>App admins always bypass.</strong> Same principle as the ACL filter — admins
+              see unredacted output regardless of which rules are configured.
+            </li>
+            <li>
+              <strong>If the rule&rsquo;s <em>Applies to</em> list is empty,</strong> it fires for
+              every non-admin caller.
+            </li>
+            <li>
+              <strong>If the list is non-empty,</strong> the rule fires only when the caller is a
+              member of at least one of the listed groups.
+            </li>
+            <li>
+              Otherwise the rule resolves to <em>view</em> — a no-op for that caller.
+            </li>
+          </ol>
+
+          {/* Two-layer redaction */}
+          <h3 className="mt-8 text-sm font-semibold uppercase tracking-wide text-slate-500">
+            How redaction happens — two layers, one visible result
+          </h3>
+          <div className="mt-2 rounded-lg border border-slate-200 bg-white p-4">
+            <ol className="list-decimal space-y-2 pl-5 text-sm text-slate-700">
+              <li>
+                <strong>Semantic (Claude).</strong> The active rules are injected into Claude&rsquo;s
+                system prompt as &ldquo;concepts to handle semantically&rdquo;. Claude rewrites
+                its answer, replacing each concept (and semantically related values, synonyms,
+                proper nouns) with the literal token <code>[REDACTED]</code>. The streaming
+                pipeline then converts those tokens into <code>«b:&lt;ruleId&gt;:n»</code>{' '}
+                markers.
+              </li>
+              <li>
+                <strong>Literal (regex).</strong> The same pipeline also runs each rule&rsquo;s
+                phrase regex on Claude&rsquo;s output as defense-in-depth. Any literal phrase
+                Claude failed to abstract semantically is caught here. Same{' '}
+                <code>«b:&lt;ruleId&gt;:n»</code> marker shape.
+              </li>
+            </ol>
+            <p className="mt-3 text-xs text-slate-500">
+              The client renders each marker as a CSS-blurred bar (<code>filter: blur(3px)</code>{' '}
+              over a smoky gradient with placeholder glyphs rendered transparent). The original
+              value never reaches the DOM — inspecting the page shows only the placeholder. The
+              rule&rsquo;s label is the span&rsquo;s tooltip.
+            </p>
+          </div>
+
+          {/* Walkthrough */}
+          <h3 className="mt-8 text-sm font-semibold uppercase tracking-wide text-slate-500">
+            Admin walkthrough
+          </h3>
+          <ol className="relative mt-2 space-y-3 border-l border-slate-200 pl-6">
+            <li className="relative">
+              <span className="absolute -left-[2.0625rem] flex h-6 w-6 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white">
+                1
+              </span>
+              <div className="text-sm text-slate-700">
+                Open <Link href="/admin" className="underline hover:text-slate-900"><code>/admin</code></Link> →{' '}
+                <strong>Rules</strong> tab → <strong>+ New rule</strong>.
+              </div>
+            </li>
+            <li className="relative">
+              <span className="absolute -left-[2.0625rem] flex h-6 w-6 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white">
+                2
+              </span>
+              <div className="text-sm text-slate-700">
+                Give it a <strong>label</strong> (e.g. <em>Compensation</em>), add one or more{' '}
+                <strong>phrases</strong> on the left side. Each phrase is its own input row;{' '}
+                <strong>+ Add phrase</strong> adds another, × removes it.
+              </div>
+            </li>
+            <li className="relative">
+              <span className="absolute -left-[2.0625rem] flex h-6 w-6 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white">
+                3
+              </span>
+              <div className="text-sm text-slate-700">
+                Optionally restrict scope: <strong>+ Add groups</strong> opens a searchable
+                multi-select pulled from your Entra Security groups. Leave empty to apply to
+                everyone.
+              </div>
+            </li>
+            <li className="relative">
+              <span className="absolute -left-[2.0625rem] flex h-6 w-6 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white">
+                4
+              </span>
+              <div className="text-sm text-slate-700">
+                Use the <strong>Live test</strong> panel on the right: paste sample text →{' '}
+                <strong>Run test</strong>. The endpoint calls Claude with the current rule (not
+                yet saved) and shows the rendered output with blur bars where redaction would
+                fire. A <em>regex pass only</em> banner appears if{' '}
+                <code>ANTHROPIC_API_KEY</code> isn&rsquo;t set — fall back to literal-phrase
+                matching only in that case.
+              </div>
+            </li>
+            <li className="relative">
+              <span className="absolute -left-[2.0625rem] flex h-6 w-6 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white">
+                5
+              </span>
+              <div className="text-sm text-slate-700">
+                Click <strong>Create rule</strong>. Sign in to chat as a non-admin user that the
+                rule applies to and ask a question whose answer would mention the concept. The
+                blur bars appear inline.
+              </div>
+            </li>
+          </ol>
+
+          {/* Examples */}
+          <h3 className="mt-8 text-sm font-semibold uppercase tracking-wide text-slate-500">
+            Example outputs
+          </h3>
+          <div className="mt-2 overflow-x-auto rounded-lg border border-slate-200 bg-white">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-50 uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-3 py-2">Rule phrases</th>
+                  <th className="px-3 py-2">Sample input</th>
+                  <th className="px-3 py-2">Output the user sees</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-slate-700">
+                <tr>
+                  <td className="px-3 py-2 align-top font-mono">money, phone</td>
+                  <td className="px-3 py-2 align-top">
+                    Acme Corporation Q3 results · contact alice@example.com · $95,000 bonus pool.
+                  </td>
+                  <td className="px-3 py-2 align-top">
+                    Acme Corporation Q3 results · contact <span className="blur-cell">••••••</span> ·{' '}
+                    <span className="blur-cell">••••••</span> <span className="blur-cell">••••••</span>.
+                  </td>
+                </tr>
+                <tr>
+                  <td className="px-3 py-2 align-top font-mono">pool</td>
+                  <td className="px-3 py-2 align-top">
+                    The amenities include a swimming pool, a lap lane, and a sauna.
+                  </td>
+                  <td className="px-3 py-2 align-top">
+                    The amenities include a <span className="blur-cell">••••••</span>, a{' '}
+                    <span className="blur-cell">••••••</span>, and a sauna.
+                  </td>
+                </tr>
+                <tr>
+                  <td className="px-3 py-2 align-top font-mono">salary</td>
+                  <td className="px-3 py-2 align-top">
+                    Claude refuses: &ldquo;I do not have access to that information.&rdquo;
+                  </td>
+                  <td className="px-3 py-2 align-top">
+                    Same — no matches, no blur, full stream.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p className="mt-3 text-[11px] text-slate-500">
+            Trade-off: when at least one rule applies for the caller, the chat response is
+            buffered in a small window (≈ longest-phrase length) before each chunk emits, so
+            phrases straddling chunk boundaries are caught. Visually you see almost-normal
+            streaming with a slight tail delay. When NO rule applies, the redactor is a
+            pure pass-through and the chat streams unchanged.
+          </p>
+
+          <p className="mt-3 text-[11px] text-slate-500">
+            Audit: chat-time redactions are summarised into the chat audit row as{' '}
+            <code>sensitivity: blurs=N, rules=[&hellip;]</code>, so §<a href="#section-azure" className="underline hover:text-slate-900">7</a>{' '}
+            can answer &ldquo;what did the user not see today, and why&rdquo; without per-match
+            detail.
+          </p>
+        </section>
+
+        {/* ==================================================================
+            SECTION 7 — AZURE
             ================================================================== */}
         <section id="section-azure" className="mt-14 scroll-mt-20">
-          <h2 className="text-xl font-semibold text-slate-900">6 · How Azure handles everything</h2>
+          <h2 className="text-xl font-semibold text-slate-900">7 · How Azure handles everything</h2>
           <p className="mt-1 text-sm text-slate-600">
             Five Azure resources plus one external service (Anthropic). Each has one job; the
             backend orchestrates them. All data at rest stays in Azure (Search index + Blob
