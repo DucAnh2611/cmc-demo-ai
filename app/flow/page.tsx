@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import CopyButton from './CopyButton';
 import StepImage from './StepImage';
+import FlowAccessGate from './FlowAccessGate';
 
 export const metadata = {
   title: 'Security & Document Flow · Secure RAG Demo'
@@ -65,11 +66,12 @@ const TONE_CLASSES: Record<LayerRow['tone'], string> = {
 
 export default function FlowPage() {
   return (
-    <main className="min-h-screen bg-slate-50 px-6 py-10">
-      <div className="mx-auto max-w-3xl">
-        <Link href="/" className="text-sm text-slate-500 underline hover:text-slate-900">
-          ← Back to chat
-        </Link>
+    <FlowAccessGate>
+      <main className="min-h-screen bg-slate-50 px-6 py-10">
+        <div className="mx-auto max-w-3xl">
+          <Link href="/" className="text-sm text-slate-500 underline hover:text-slate-900">
+            ← Back to chat
+          </Link>
 
         <header className="mt-6">
           <h1 className="text-3xl font-semibold text-slate-900">Security &amp; document flow</h1>
@@ -1280,5 +1282,6 @@ sample-docs/<dept>/*.md                /api/upload (PDF / DOCX / MD / TXT / HTML
         </footer>
       </div>
     </main>
+    </FlowAccessGate>
   );
 }

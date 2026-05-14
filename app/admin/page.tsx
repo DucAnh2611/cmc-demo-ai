@@ -5,6 +5,7 @@ import { useMsal, useIsAuthenticated } from '@azure/msal-react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { graphTokenRequest } from '@/lib/auth/msalConfig';
+import { FlowAccessEditor } from '../flow/FlowAccessEditor';
 
 // =====================================================================
 // Types — mirror the Graph shapes returned by /api/admin/* endpoints
@@ -43,7 +44,7 @@ interface AdminGroup {
   isUploadersGroup?: boolean;
 }
 
-type AdminTab = 'users' | 'groups' | 'rules';
+type AdminTab = 'users' | 'groups' | 'rules' | 'access';
 
 // Mirrors lib/security/rules.ts. One treatment level (blur) and an
 // optional group scope — that's the entire model.
@@ -121,6 +122,9 @@ export default function AdminPage() {
           <TabButton active={tab === 'rules'} onClick={() => setTab('rules')}>
             Rules
           </TabButton>
+          <TabButton active={tab === 'access'} onClick={() => setTab('access')}>
+            Access
+          </TabButton>
         </div>
       </header>
 
@@ -128,6 +132,7 @@ export default function AdminPage() {
         {tab === 'users' && <UsersTab acquireToken={acquireToken} />}
         {tab === 'groups' && <GroupsTab acquireToken={acquireToken} />}
         {tab === 'rules' && <RulesTab acquireToken={acquireToken} />}
+        {tab === 'access' && <AccessTab acquireToken={acquireToken} />}
       </div>
     </main>
   );
@@ -3041,6 +3046,32 @@ function GroupPickerModal({
             Add {picked.size > 0 ? `${picked.size} ` : ''}group{picked.size === 1 ? '' : 's'}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// ACCESS TAB — manages who can read /flow.
+//
+// One single policy record stored at uploads/access/flow.json. The
+// editor itself lives in app/flow/FlowAccessEditor.tsx so the same
+// component can be embedded inline on /flow (admin sees a "Manage
+// access" affordance there) and here in the admin panel. We just
+// frame it with the standard tab heading + intro paragraph.
+// =====================================================================
+
+function AccessTab({ acquireToken }: { acquireToken: () => Promise<string> }) {
+  return (
+    <div className="max-w-2xl">
+      <h2 className="text-lg font-semibold text-slate-900">/flow doc access</h2>
+      <p className="mt-1 text-xs text-slate-500">
+        Decide who can read the <code>/flow</code> documentation page. Choose <strong>public</strong> for an
+        unauthenticated link, <strong>anyone with link</strong> for any signed-in user, or <strong>restricted</strong> to
+        scope access to specific groups and/or people. Admins always bypass.
+      </p>
+      <div className="mt-4 rounded-lg border border-slate-200 bg-white p-4">
+        <FlowAccessEditor acquireToken={acquireToken} />
       </div>
     </div>
   );
